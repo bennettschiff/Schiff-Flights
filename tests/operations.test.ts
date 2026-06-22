@@ -15,6 +15,7 @@ function plane(overrides: Partial<Plane>): Plane {
     distNm: 1,
     brg: 180,
     inView: true,
+    positionTs: 1_000,
     ...overrides,
   };
 }

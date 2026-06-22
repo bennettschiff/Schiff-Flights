@@ -65,4 +65,5 @@ export interface Plane extends RawAircraft {
   brg: number; // bearing from home to plane
   inView: boolean; // inside your balcony's view cone
   localOperation?: LocalOperation;
+  positionTs: number; // epoch ms for the underlying ADS-B position sample
 }

@@ -7,6 +7,8 @@ import { IconLayer, PolygonLayer, ScatterplotLayer, TextLayer } from "@deck.gl/l
 import { Tile3DLayer, GreatCircleLayer } from "@deck.gl/geo-layers";
 import { Tiles3DLoader } from "@loaders.gl/3d-tiles";
 import { conePolygon, distanceNm } from "@/lib/geo";
+import { projectAircraftPosition } from "@/lib/motion";
+import { airlineBadgeForCallsign, type AirlineBadge } from "@/lib/airlines";
 import { fmtAlt, fmtSpeed, fmtDist, cardinal, fmtDuration, fmtClock, isHelicopter } from "@/lib/format";
 import type { Plane, RouteInfo, Airport } from "@/lib/types";
 import Basemap2D from "@/components/Basemap2D";
@@ -18,6 +20,17 @@ const CLAY: [number, number, number] = [193, 95, 60];
 
 const FT_TO_M = 0.3048;
 const altM = (p: Plane) => (typeof p.alt_baro === "number" ? p.alt_baro * FT_TO_M : 0);
+
+interface RenderPlane extends Plane {
+  renderLat: number;
+  renderLon: number;
+  airlineBadge?: AirlineBadge;
+}
+
+interface MotionState {
+  lat: number;
+  lon: number;
+}
 
 // Emoji atlas: cell 0 = airplane, cell 1 = helicopter.
 function makeIconAtlas(): string {
@@ -45,6 +58,7 @@ export default function Map3D({
   cone,
   heading,
   radiusNm,
+  showFieldOfView,
   planes,
   selectedId,
   route,
@@ -56,6 +70,7 @@ export default function Map3D({
   cone: { start: number; end: number };
   heading: number;
   radiusNm: number;
+  showFieldOfView: boolean;
   planes: Plane[];
   selectedId: string | null;
   route: RouteInfo | null;
@@ -66,18 +81,24 @@ export default function Map3D({
   const [credits, setCredits] = useState("");
   const creditsRef = useRef<Set<string>>(new Set());
   const failed3DRef = useRef(false);
+  const motionRef = useRef<Map<string, MotionState>>(new Map());
+  const lastMotionFrameRef = useRef<number | null>(null);
 
-  // Animation clock — drives the radar sweep and the breathing glow so the
-  // map reads as live rather than a static screenshot. Only runs in the 2D
-  // modes (the 3D tileset is expensive to redraw) and pauses when hidden.
+  // Animation clock for continuous aircraft motion. Thirty frames per second
+  // is visually smooth without making React rebuild deck.gl layers at 60 fps;
+  // 3D uses a lighter 15 fps cadence.
   const [tick, setTick] = useState(0);
   useEffect(() => {
-    if (mode === "3d") return;
     let raf = 0;
     let running = true;
+    let lastPaint = 0;
+    const frameInterval = mode === "3d" ? 1000 / 15 : 1000 / 30;
     const loop = (ts: number) => {
       if (!running) return;
-      setTick(ts);
+      if (ts - lastPaint >= frameInterval) {
+        lastPaint = ts;
+        setTick(ts);
+      }
       raf = requestAnimationFrame(loop);
     };
     const onVis = () => {
@@ -135,7 +156,46 @@ export default function Map3D({
   const sel = selectedId ? planes.find((p) => p.id === selectedId) : null;
   const routeUsable = route?.confidence === "verified" || route?.confidence === "plausible";
 
-  // Drawn flight path for the selected aircraft (origin → now → destination).
+  // Project every fresh ADS-B snapshot forward to this frame, then gently
+  // absorb the small correction when the next real position arrives. The list
+  // still shows source data; only map coordinates are animated.
+  const animatedPlanes = useMemo<RenderPlane[]>(() => {
+    const now = Date.now();
+    const previousFrame = lastMotionFrameRef.current;
+    const frameDelta = previousFrame == null ? 0 : Math.max(0, Math.min(250, tick - previousFrame));
+    lastMotionFrameRef.current = tick;
+    const correctionBlend = previousFrame == null ? 1 : 1 - Math.exp(-frameDelta / 350);
+    const active = new Set<string>();
+
+    const rendered = planes.map((plane) => {
+      active.add(plane.id);
+      const target = projectAircraftPosition(
+        { ...plane, lat: plane.lat!, lon: plane.lon! },
+        now
+      );
+      const prior = motionRef.current.get(plane.id);
+      const state = prior
+        ? {
+            lat: prior.lat + (target.lat - prior.lat) * correctionBlend,
+            lon: prior.lon + (target.lon - prior.lon) * correctionBlend,
+          }
+        : { lat: target.lat, lon: target.lon };
+      motionRef.current.set(plane.id, state);
+      return {
+        ...plane,
+        renderLat: state.lat,
+        renderLon: state.lon,
+        airlineBadge: airlineBadgeForCallsign(plane.flight),
+      };
+    });
+
+    for (const id of motionRef.current.keys()) {
+      if (!active.has(id)) motionRef.current.delete(id);
+    }
+    return rendered;
+  }, [planes, tick]);
+
+  // Claimed great-circle corridor for a route that passed the live plausibility check.
   function routeLayers(): any[] {
     if (
       !sel ||
@@ -185,16 +245,12 @@ export default function Map3D({
     ];
   }
 
-  // ── Aircraft + decorations, shared by the 2D overlay and the 3D scene ──
-  // Gentle 0.85→1.15 pulse so in-view aircraft visibly "breathe".
-  const breath = 1 + 0.15 * Math.sin(tick / 460);
-  const breathBucket = Math.round(tick / 40);
-
-  const glow = new ScatterplotLayer<Plane>({
+  // ── Aircraft, shared by the 2D overlay and the 3D scene ───────────────
+  const glow = new ScatterplotLayer<RenderPlane>({
     id: "plane-glow",
-    data: planes.filter((p) => p.inView || p.id === selectedId),
-    getPosition: (d) => [d.lon!, d.lat!, altM(d)],
-    getRadius: (d) => (d.id === selectedId ? 19 : 13) * breath,
+    data: animatedPlanes.filter((p) => p.inView || p.id === selectedId),
+    getPosition: (d) => [d.renderLon, d.renderLat, altM(d)],
+    getRadius: (d) => (d.id === selectedId ? 19 : 13),
     radiusUnits: "pixels",
     getFillColor: (d) => (d.id === selectedId ? [193, 95, 60, 70] : [193, 95, 60, 40]),
     stroked: true,
@@ -202,56 +258,56 @@ export default function Map3D({
     getLineWidth: 2,
     lineWidthUnits: "pixels",
     billboard: true,
-    // Glide to the next reported position instead of jumping each poll.
-    transitions: { getPosition: { duration: 1800 } },
     updateTriggers: {
-      getRadius: [selectedId, breathBucket],
+      getRadius: selectedId,
       getFillColor: selectedId,
       getLineColor: selectedId,
     },
   });
 
-  const planeLayer = new IconLayer<Plane>({
+  const planeLayer = new IconLayer<RenderPlane>({
     id: "planes",
-    data: planes,
+    data: animatedPlanes,
     iconAtlas: icon,
     iconMapping: ICON_MAPPING,
     getIcon: (d) => (isHelicopter(d) ? "heli" : "plane"),
-    getPosition: (d) => [d.lon!, d.lat!, altM(d)],
+    getPosition: (d) => [d.renderLon, d.renderLat, altM(d)],
     getSize: (d) => (d.id === selectedId ? 38 : 30),
     sizeUnits: "pixels",
     // ✈️ emoji points NE (~45°); rotate so the nose follows the track.
     getAngle: (d) => (isHelicopter(d) ? 0 : 45 - (d.track ?? 0)),
     billboard: true,
     pickable: true,
-    // Smoothly interpolate between the 5s position snapshots.
-    transitions: { getPosition: { duration: 1800 } },
     updateTriggers: { getSize: selectedId },
   });
 
-  // Expanding radar pulses from home — two rings, half a cycle apart, so the
-  // sweep feels continuous. Radius is geographic so it tracks the view range.
-  const radarRings = [0, 1].map((i) => {
-    const phase = (tick / 3400 + i * 0.5) % 1;
-    const fade = (1 - phase) * (1 - phase);
-    return new ScatterplotLayer<{ position: [number, number] }>({
-      id: `radar-ring-${i}`,
-      data: [{ position: [home.lon, home.lat] }],
-      getPosition: (d) => d.position,
-      getRadius: radiusNm * 1852 * (0.04 + phase * 0.96),
-      radiusUnits: "meters",
-      stroked: true,
-      filled: false,
-      getLineColor: [193, 95, 60, Math.round(210 * fade)],
-      getLineWidth: 2.2,
-      lineWidthUnits: "pixels",
-      updateTriggers: { getRadius: tick, getLineColor: tick },
-    });
+  // A compact, locally rendered airline mark avoids a network request per
+  // aircraft and stays attached to the continuously animated position.
+  const airlineBadgeLayer = new TextLayer<RenderPlane>({
+    id: "airline-badges",
+    data: animatedPlanes.filter((plane) => plane.airlineBadge),
+    getPosition: (plane) => [plane.renderLon, plane.renderLat, altM(plane)],
+    getText: (plane) => plane.airlineBadge!.mark,
+    getSize: 9,
+    sizeUnits: "pixels",
+    getColor: (plane) => plane.airlineBadge!.foreground,
+    getPixelOffset: [0, 19],
+    getTextAnchor: "middle",
+    getAlignmentBaseline: "center",
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+    fontWeight: 700,
+    background: true,
+    getBackgroundColor: (plane) => plane.airlineBadge!.background,
+    backgroundPadding: [4, 2],
+    billboard: true,
+    pickable: false,
   });
 
   const coneLayer = new PolygonLayer<{ polygon: [number, number][] }>({
     id: "cone",
-    data: [{ polygon: conePolygon(home.lat, home.lon, cone.start, cone.end, radiusNm) }],
+    data: showFieldOfView
+      ? [{ polygon: conePolygon(home.lat, home.lon, cone.start, cone.end, radiusNm) }]
+      : [],
     getPolygon: (d) => d.polygon,
     getFillColor: [193, 95, 60, 52],
     getLineColor: [193, 95, 60, 220],
@@ -276,11 +332,11 @@ export default function Map3D({
 
   // Layers drawn over the MapLibre vector/satellite base in the 2D modes.
   const layers2D = [
-    ...radarRings,
     coneLayer,
     homeLayer,
     ...routeLayers(),
     glow,
+    airlineBadgeLayer,
     planeLayer,
   ];
 
@@ -300,6 +356,7 @@ export default function Map3D({
     }),
     ...routeLayers(),
     glow,
+    airlineBadgeLayer,
     planeLayer,
   ];
 

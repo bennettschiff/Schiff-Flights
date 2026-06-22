@@ -18,6 +18,7 @@ import { annotateLocalOperations, type TrackHistory } from "@/lib/operations";
 import type { Plane, RawAircraft, RouteInfo } from "@/lib/types";
 import AircraftList from "@/components/AircraftList";
 import SetupModal from "@/components/SetupModal";
+import MapCompass from "@/components/MapCompass";
 import type { ViewMode } from "@/components/Map3D";
 
 const Map3D = dynamic(() => import("@/components/Map3D"), { ssr: false });
@@ -28,7 +29,15 @@ const MODES: { key: ViewMode; label: string }[] = [
   { key: "3d", label: "3D" },
 ];
 
-function enrich(raw: RawAircraft[], s: Settings): Plane[] {
+const FOV_STORAGE_KEY = "schiff-flights-show-fov";
+
+function trackerQuery(settings: Settings, showFieldOfView: boolean): string {
+  const params = new URLSearchParams(settingsToQuery(settings));
+  if (!showFieldOfView) params.set("fov", "0");
+  return params.toString();
+}
+
+function enrich(raw: RawAircraft[], s: Settings, receivedAt: number): Plane[] {
   const cone = coneFromHeading(s.heading, s.width);
   return raw
     .filter((a) => typeof a.lat === "number" && typeof a.lon === "number")
@@ -42,6 +51,7 @@ function enrich(raw: RawAircraft[], s: Settings): Plane[] {
         distNm,
         brg,
         inView: inCone(brg, cone.start, cone.end),
+        positionTs: receivedAt - Math.max(0, Math.min(30, a.seen_pos ?? 0)) * 1000,
       };
     })
     .sort((x, y) => x.distNm - y.distNm);
@@ -60,11 +70,16 @@ export default function Page() {
   const [toast, setToast] = useState<string | null>(null);
   const [feedSource, setFeedSource] = useState<string>("airplanes.live");
   const [feedStale, setFeedStale] = useState(false);
+  const [showFieldOfView, setShowFieldOfView] = useState(true);
   const trackHistoryRef = useRef<TrackHistory>(new Map());
   const loadSequenceRef = useRef(0);
 
   // Decide initial settings: URL > localStorage > default (and prompt setup).
   useEffect(() => {
+    const fovParam = new URLSearchParams(window.location.search).get("fov");
+    const storedFov = window.localStorage.getItem(FOV_STORAGE_KEY);
+    setShowFieldOfView(fovParam != null ? fovParam !== "0" : storedFov !== "0");
+
     const fromUrl = settingsFromParams(new URLSearchParams(window.location.search));
     if (fromUrl) {
       setSettings(fromUrl);
@@ -88,6 +103,7 @@ export default function Page() {
       });
       const data = (await res.json()) as {
         ac: RawAircraft[];
+        now?: number;
         error?: string;
         source?: string;
         fallback?: boolean;
@@ -95,7 +111,15 @@ export default function Page() {
       };
       if (sequence !== loadSequenceRef.current) return;
       const now = Date.now();
-      setPlanes(annotateLocalOperations(enrich(data.ac ?? [], s), trackHistoryRef.current, now));
+      const sourceNow =
+        typeof data.now === "number" && Number.isFinite(data.now)
+          ? data.now < 1_000_000_000_000
+            ? data.now * 1000
+            : data.now
+          : now;
+      setPlanes(
+        annotateLocalOperations(enrich(data.ac ?? [], s, sourceNow), trackHistoryRef.current, now)
+      );
       if (!data.stale) setUpdatedAt(now);
       setError(data.error ?? null);
       setFeedSource(data.source ?? "airplanes.live");
@@ -180,12 +204,20 @@ export default function Page() {
     setSetupOpen(false);
     setSelectedId(null);
     saveStored(s);
-    const q = settingsToQuery(s);
+    const q = trackerQuery(s, showFieldOfView);
+    window.history.replaceState(null, "", `${window.location.pathname}?${q}`);
+  }
+
+  function toggleFieldOfView() {
+    const next = !showFieldOfView;
+    setShowFieldOfView(next);
+    window.localStorage.setItem(FOV_STORAGE_KEY, next ? "1" : "0");
+    const q = trackerQuery(settings, next);
     window.history.replaceState(null, "", `${window.location.pathname}?${q}`);
   }
 
   async function share() {
-    const url = `${window.location.origin}${window.location.pathname}?${settingsToQuery(settings)}`;
+    const url = `${window.location.origin}${window.location.pathname}?${trackerQuery(settings, showFieldOfView)}`;
     try {
       if (navigator.share) {
         await navigator.share({ title: "Schiff Flights", url });
@@ -263,23 +295,36 @@ export default function Page() {
             cone={cone}
             heading={settings.heading}
             radiusNm={settings.radiusNm}
+            showFieldOfView={showFieldOfView}
             planes={planes}
             selectedId={selectedId}
             route={route}
             onSelect={setSelectedId}
             on3DError={handle3DError}
           />
-          <div className="mode-toggle">
-            {MODES.map((m) => (
-              <button
-                key={m.key}
-                className={mode === m.key ? "active" : ""}
-                onClick={() => setMode(m.key)}
-              >
-                {m.label}
-              </button>
-            ))}
+          <div className="map-controls">
+            <div className="mode-toggle">
+              {MODES.map((m) => (
+                <button
+                  key={m.key}
+                  className={mode === m.key ? "active" : ""}
+                  onClick={() => setMode(m.key)}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <button
+              className={`fov-toggle${showFieldOfView ? " active" : ""}`}
+              type="button"
+              aria-pressed={showFieldOfView}
+              onClick={toggleFieldOfView}
+              title={`${showFieldOfView ? "Hide" : "Show"} your field of view`}
+            >
+              <span aria-hidden>◉</span> View cone
+            </button>
           </div>
+          <MapCompass heading={settings.heading} />
         </div>
         <aside className="sidebar">
           <div className="sidebar-head">
