@@ -6,6 +6,7 @@ test("identifies a major airline from an ICAO callsign", () => {
   assert.deepEqual(airlineBadgeForCallsign(" AAL1147 "), {
     mark: "AA",
     name: "American Airlines",
+    logo: "/airline-logos/AA.png",
     background: [20, 73, 133, 245],
     foreground: [255, 255, 255, 255],
   });
@@ -15,6 +16,7 @@ test("uses a dark mark on a bright carrier color", () => {
   assert.deepEqual(airlineBadgeForCallsign("NKS302"), {
     mark: "NK",
     name: "Spirit Airlines",
+    logo: "/airline-logos/NK.png",
     background: [255, 225, 0, 250],
     foreground: [24, 27, 31, 255],
   });

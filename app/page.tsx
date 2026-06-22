@@ -19,6 +19,7 @@ import type { Plane, RawAircraft, RouteInfo } from "@/lib/types";
 import AircraftList from "@/components/AircraftList";
 import SetupModal from "@/components/SetupModal";
 import MapCompass from "@/components/MapCompass";
+import CameraView from "@/components/CameraView";
 import type { ViewMode } from "@/components/Map3D";
 
 const Map3D = dynamic(() => import("@/components/Map3D"), { ssr: false });
@@ -30,6 +31,7 @@ const MODES: { key: ViewMode; label: string }[] = [
 ];
 
 const FOV_STORAGE_KEY = "schiff-flights-show-fov";
+const LIST_STORAGE_KEY = "schiff-flights-list-collapsed";
 
 function trackerQuery(settings: Settings, showFieldOfView: boolean): string {
   const params = new URLSearchParams(settingsToQuery(settings));
@@ -71,6 +73,8 @@ export default function Page() {
   const [feedSource, setFeedSource] = useState<string>("airplanes.live");
   const [feedStale, setFeedStale] = useState(false);
   const [showFieldOfView, setShowFieldOfView] = useState(true);
+  const [listCollapsed, setListCollapsed] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const trackHistoryRef = useRef<TrackHistory>(new Map());
   const loadSequenceRef = useRef(0);
 
@@ -79,6 +83,7 @@ export default function Page() {
     const fovParam = new URLSearchParams(window.location.search).get("fov");
     const storedFov = window.localStorage.getItem(FOV_STORAGE_KEY);
     setShowFieldOfView(fovParam != null ? fovParam !== "0" : storedFov !== "0");
+    setListCollapsed(window.localStorage.getItem(LIST_STORAGE_KEY) === "1");
 
     const fromUrl = settingsFromParams(new URLSearchParams(window.location.search));
     if (fromUrl) {
@@ -216,6 +221,12 @@ export default function Page() {
     window.history.replaceState(null, "", `${window.location.pathname}?${q}`);
   }
 
+  function toggleList() {
+    const next = !listCollapsed;
+    setListCollapsed(next);
+    window.localStorage.setItem(LIST_STORAGE_KEY, next ? "1" : "0");
+  }
+
   async function share() {
     const url = `${window.location.origin}${window.location.pathname}?${trackerQuery(settings, showFieldOfView)}`;
     try {
@@ -277,6 +288,17 @@ export default function Page() {
             <span aria-hidden>⤴</span>
           </button>
           <button
+            className="icon-btn camera-btn"
+            aria-label="Open flight camera"
+            onClick={() => setCameraOpen(true)}
+            title="Identify aircraft with your camera"
+          >
+            <svg aria-hidden viewBox="0 0 24 24">
+              <path d="M8.3 6.3 9.5 4h5l1.2 2.3H19a2 2 0 0 1 2 2v8.4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8.3a2 2 0 0 1 2-2h3.3Z" />
+              <circle cx="12" cy="12.5" r="3.4" />
+            </svg>
+          </button>
+          <button
             className="icon-btn"
             aria-label="Settings"
             onClick={() => setSetupOpen(true)}
@@ -287,7 +309,7 @@ export default function Page() {
         </div>
       </header>
 
-      <div className="body">
+      <div className={`body${listCollapsed ? " list-collapsed" : ""}`}>
         <div className="map-wrap">
           <Map3D
             mode={mode}
@@ -328,13 +350,31 @@ export default function Page() {
         </div>
         <aside className="sidebar">
           <div className="sidebar-head">
-            Aircraft · nearest first {inViewCount > 0 && `· ${inViewCount} in view`}
+            <span>Aircraft · nearest first {inViewCount > 0 && `· ${inViewCount} in view`}</span>
+            <button
+              type="button"
+              className="list-toggle"
+              aria-expanded={!listCollapsed}
+              aria-label={listCollapsed ? "Show aircraft list" : "Hide aircraft list"}
+              onClick={toggleList}
+            >
+              <span aria-hidden>{listCollapsed ? "⌃" : "⌄"}</span>
+            </button>
           </div>
           <AircraftList planes={planes} selectedId={selectedId} onSelect={setSelectedId} />
         </aside>
       </div>
 
       {toast && <div className="toast">{toast}</div>}
+
+      {cameraOpen && (
+        <CameraView
+          planes={planes}
+          fallbackHeading={settings.heading}
+          onSelect={setSelectedId}
+          onClose={() => setCameraOpen(false)}
+        />
+      )}
 
       {setupOpen && (
         <SetupModal

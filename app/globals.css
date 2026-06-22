@@ -64,6 +64,7 @@ html, body {
   transition: background 0.12s, border-color 0.12s;
 }
 .icon-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+.icon-btn svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 
 /* ── Body split ─────────────────────────────────────── */
 .body { display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
@@ -130,6 +131,14 @@ html, body {
 }
 .plane-card { min-width: 210px; max-width: 250px; }
 .pc-call { font-size: 15px; font-weight: 700; color: var(--accent); padding-right: 16px; }
+.pc-airline-logo {
+  width: 22px; height: 22px; object-fit: contain; vertical-align: middle;
+  margin-right: 7px; border-radius: 4px; background: rgba(255,255,255,0.88);
+}
+.pc-aircraft-photo {
+  display: block; width: 100%; max-height: 112px; object-fit: cover;
+  margin-top: 9px; border-radius: 8px; border: 1px solid var(--border);
+}
 .pc-type { color: var(--muted); font-weight: 500; }
 .pc-sub { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.3; }
 .pc-row { font-size: 12.5px; color: var(--text); margin-top: 4px; }
@@ -167,6 +176,12 @@ html, body {
   position: sticky; top: 0; padding: 10px 14px;
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted);
   background: var(--panel); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; z-index: 2;
+}
+.list-toggle {
+  display: none; flex: 0 0 32px; width: 32px; height: 28px; padding: 0;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
+  color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer;
 }
 
 /* ── Aircraft rows ──────────────────────────────────── */
@@ -181,6 +196,10 @@ html, body {
 .compass { width: 24px; height: 24px; color: var(--plane); }
 .row.inview .compass { color: var(--accent); }
 .row .callsign { font-weight: 650; font-size: 14px; }
+.row-airline-logo {
+  width: 18px; height: 18px; object-fit: contain; vertical-align: -4px;
+  margin-right: 6px; border-radius: 3px; background: rgba(255,255,255,0.85);
+}
 .row .meta { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
 .row .right { text-align: right; }
 .row .dist { font-size: 13px; font-weight: 600; }
@@ -270,12 +289,92 @@ html, body {
   font-size: 13px; font-weight: 600; z-index: 60;
 }
 
+/* ── Live phone camera flight finder ───────────────── */
+.camera-view {
+  position: fixed; inset: 0; z-index: 100; overflow: hidden; color: #fff;
+  background: #171614; padding: var(--safe-top) 0 var(--safe-bottom);
+}
+.camera-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.camera-shade {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to bottom, rgba(0,0,0,.58), transparent 24%, transparent 72%, rgba(0,0,0,.48));
+}
+.camera-topbar {
+  position: absolute; top: calc(10px + var(--safe-top)); left: 14px; right: 14px;
+  display: flex; justify-content: space-between; align-items: center; z-index: 2;
+}
+.camera-topbar > div { display: flex; flex-direction: column; text-shadow: 0 1px 3px #000; }
+.camera-topbar b { font-size: 17px; }
+.camera-topbar span { font-size: 11px; opacity: .78; margin-top: 2px; }
+.camera-topbar button {
+  width: 38px; height: 38px; border-radius: 50%; border: 1px solid rgba(255,255,255,.45);
+  background: rgba(0,0,0,.44); color: #fff; font-size: 27px; line-height: 1; cursor: pointer;
+}
+.camera-start {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  width: min(340px, calc(100% - 40px)); padding: 24px; text-align: center;
+  background: rgba(31,30,28,.88); border: 1px solid rgba(255,255,255,.2); border-radius: 18px;
+  backdrop-filter: blur(14px);
+}
+.camera-start-icon { font-size: 44px; color: #efb096; }
+.camera-start h2 { margin: 8px 0; font-size: 19px; }
+.camera-start p { margin: 0 0 18px; font-size: 12px; line-height: 1.45; color: rgba(255,255,255,.76); }
+.camera-start-btn {
+  width: 100%; height: 44px; border: none; border-radius: 10px; color: #fff;
+  background: var(--accent); font-weight: 700; font-size: 15px; cursor: pointer;
+}
+.camera-start-btn:disabled { opacity: .65; }
+.camera-error { margin-top: 12px; font-size: 12px; color: #ffc2ad; }
+.camera-reticle {
+  position: absolute; left: 50%; top: 50%; width: 34px; height: 34px;
+  transform: translate(-50%,-50%); border: 1px solid rgba(255,255,255,.6); border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.22); pointer-events: none;
+}
+.camera-reticle::before, .camera-reticle::after {
+  content: ""; position: absolute; background: rgba(255,255,255,.75);
+}
+.camera-reticle::before { width: 12px; height: 1px; left: 10px; top: 16px; }
+.camera-reticle::after { width: 1px; height: 12px; left: 16px; top: 10px; }
+.camera-plane {
+  position: absolute; transform: translate(-50%,-50%); display: flex; align-items: center; gap: 7px;
+  border: 1px solid rgba(255,255,255,.7); border-radius: 10px; padding: 6px 9px;
+  background: rgba(22,21,19,.78); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.35);
+  backdrop-filter: blur(7px); white-space: nowrap; cursor: pointer;
+}
+.camera-plane img { width: 24px; height: 24px; object-fit: contain; border-radius: 4px; background: #fff; }
+.camera-plane span { display: flex; flex-direction: column; text-align: left; }
+.camera-plane b { font-size: 13px; }
+.camera-plane small { font-size: 10px; opacity: .74; margin-top: 1px; }
+.camera-hint {
+  position: absolute; bottom: calc(22px + var(--safe-bottom)); left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,.56); border: 1px solid rgba(255,255,255,.25); border-radius: 999px;
+  padding: 8px 13px; font-size: 11px; white-space: nowrap;
+}
+
 /* ── Mobile: sidebar becomes a bottom sheet ─────────── */
 @media (max-width: 720px) {
   .body { grid-template-columns: 1fr; grid-template-rows: 1fr 40dvh; }
+  .body.list-collapsed { grid-template-rows: 1fr 46px; }
   .sidebar { border-left: none; border-top: 1px solid var(--border); }
+  .body.list-collapsed .sidebar { overflow: hidden; padding-bottom: 0; }
+  .list-toggle { display: inline-flex; align-items: center; justify-content: center; }
   .sub { display: none; }
-  .stats { gap: 10px; }
+  .header { gap: 6px; padding-left: 10px; padding-right: 10px; }
+  .header h1 { font-size: 14px; gap: 6px; white-space: nowrap; }
+  .live-dot { width: 7px; height: 7px; }
+  .header-right { gap: 5px; }
+  .stats { gap: 7px; }
+  .stat .n { font-size: 17px; }
+  .stat .l { font-size: 9px; letter-spacing: .3px; }
+  .icon-btn { width: 34px; height: 34px; flex: 0 0 34px; }
   .plane-card { top: 58px; right: 12px; max-width: none; }
   .map-compass { bottom: 10px; right: 8px; transform: scale(0.9); transform-origin: bottom right; }
+}
+
+@media (max-width: 390px) {
+  .header { padding-left: 8px; padding-right: 8px; }
+  .header h1 { font-size: 13px; }
+  .header-right { gap: 4px; }
+  .stats { gap: 5px; }
+  .icon-btn { width: 32px; height: 32px; flex-basis: 32px; }
 }

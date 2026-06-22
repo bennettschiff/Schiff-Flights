@@ -1,12 +1,14 @@
 export interface AirlineBadge {
   mark: string;
   name: string;
+  logo: string;
   background: [number, number, number, number];
   foreground: [number, number, number, number];
 }
 
-type BadgeDefinition = Omit<AirlineBadge, "foreground"> & {
+type BadgeDefinition = Omit<AirlineBadge, "foreground" | "logo"> & {
   foreground?: [number, number, number, number];
+  logoCode?: string;
 };
 
 const WHITE: [number, number, number, number] = [255, 255, 255, 255];
@@ -47,7 +49,7 @@ const AIRLINES: Record<string, BadgeDefinition> = {
   QTR: { mark: "QR", name: "Qatar Airways", background: [91, 31, 55, 245] },
   THY: { mark: "TK", name: "Turkish Airlines", background: [200, 16, 46, 245] },
 
-  UPS: { mark: "UPS", name: "UPS Airlines", background: [53, 38, 30, 245] },
+  UPS: { mark: "UPS", logoCode: "5X", name: "UPS Airlines", background: [53, 38, 30, 245] },
   FDX: { mark: "FX", name: "FedEx Express", background: [77, 20, 140, 245] },
   GTI: { mark: "5Y", name: "Atlas Air", background: [19, 66, 121, 245] },
 };
@@ -57,5 +59,9 @@ export function airlineBadgeForCallsign(callsign?: string): AirlineBadge | undef
   if (!compact || !/^[A-Z]{3}\d/.test(compact)) return undefined;
   const badge = AIRLINES[compact.slice(0, 3)];
   if (!badge) return undefined;
-  return { ...badge, foreground: badge.foreground ?? WHITE };
+  return {
+    ...badge,
+    logo: `/airline-logos/${badge.logoCode ?? badge.mark}.png`,
+    foreground: badge.foreground ?? WHITE,
+  };
 }

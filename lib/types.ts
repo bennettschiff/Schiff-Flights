@@ -14,6 +14,8 @@ export interface RawAircraft {
   category?: string; // ADS-B emitter category, e.g. "A3", "A7" (rotorcraft)
   desc?: string; // human description, e.g. "BOEING 737-900"
   ownOp?: string; // operator/owner
+  photoUrl?: string; // supplemental aircraft photo
+  photoThumbnailUrl?: string;
   seen_pos?: number; // seconds since last position update
   route_origin?: string; // present on TFMS-enriched receiver feeds
   route_dest?: string;

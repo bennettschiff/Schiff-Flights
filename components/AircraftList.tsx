@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { cardinal, fmtAlt, fmtSpeed, fmtDist, isHelicopter } from "@/lib/format";
 import type { Plane } from "@/lib/types";
+import { airlineBadgeForCallsign } from "@/lib/airlines";
 
 function Compass({ deg }: { deg: number }) {
   // Arrow points in the compass direction from you to the aircraft.
@@ -36,6 +37,7 @@ export default function AircraftList({
     <>
       {planes.map((p) => {
         const active = p.id === selectedId;
+        const airline = airlineBadgeForCallsign(p.flight);
         return (
           <div
             key={p.id}
@@ -46,13 +48,14 @@ export default function AircraftList({
             <Compass deg={p.brg} />
             <div>
               <div className="callsign">
+                {airline && <img className="row-airline-logo" src={airline.logo} alt={airline.name} />}
                 {isHelicopter(p) ? "🚁 " : ""}
                 {p.callsign}
                 {p.inView && <span className="badge">IN VIEW</span>}
               </div>
               <div className="meta">
                 {p.localOperation ? `${p.localOperation.label} · ` : ""}
-                {p.t ? `${p.t} · ` : ""}
+                {p.t ? `${p.t} · ` : p.r && p.r !== p.callsign ? `${p.r} · ` : ""}
                 {fmtAlt(p.alt_baro)} · {fmtSpeed(p.gs)}
               </div>
             </div>

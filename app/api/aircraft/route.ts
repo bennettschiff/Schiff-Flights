@@ -18,6 +18,85 @@ const cache = new Map<string, { t: number; data: AircraftPayload }>();
 const TTL_MS = 3000;
 const MAX_CACHE_ENTRIES = 100;
 
+interface AircraftMetadata {
+  r?: string;
+  t?: string;
+  desc?: string;
+  ownOp?: string;
+  photoUrl?: string;
+  photoThumbnailUrl?: string;
+}
+
+// Registration data changes very slowly. Cache both hits and misses so the
+// five-second live poll never turns into a storm of metadata requests.
+const metadataCache = new Map<string, { t: number; data: AircraftMetadata | null }>();
+const METADATA_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_NEW_METADATA_LOOKUPS = 16;
+
+async function fetchAircraftMetadata(hex: string): Promise<AircraftMetadata | null> {
+  try {
+    const res = await fetch(`https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(hex)}`, {
+      headers: { "User-Agent": "plane-spotter/0.5 (personal use)" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(3500),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const aircraft = json?.response?.aircraft;
+    if (!aircraft) return null;
+    return {
+      r: aircraft.registration || undefined,
+      t: aircraft.icao_type || undefined,
+      desc: [aircraft.manufacturer, aircraft.type].filter(Boolean).join(" ") || undefined,
+      ownOp: aircraft.registered_owner || undefined,
+      photoUrl: aircraft.url_photo || undefined,
+      photoThumbnailUrl: aircraft.url_photo_thumbnail || undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function supplementAircraft(rows: RawAircraft[]): Promise<RawAircraft[]> {
+  const now = Date.now();
+  const lookups: Promise<void>[] = [];
+  let started = 0;
+
+  for (const aircraft of rows) {
+    const key = aircraft.hex.replace(/^~/, "").toUpperCase();
+    if (!/^[0-9A-F]{6}$/.test(key)) continue;
+    const cached = metadataCache.get(key);
+    if (cached && now - cached.t < METADATA_TTL_MS) continue;
+    if (started >= MAX_NEW_METADATA_LOOKUPS) continue;
+    // The supplement is most useful when a feed omitted its database fields.
+    if (aircraft.r && aircraft.t && aircraft.ownOp && aircraft.desc) continue;
+    started += 1;
+    lookups.push(
+      fetchAircraftMetadata(key).then((data) => {
+        metadataCache.set(key, { t: Date.now(), data });
+      })
+    );
+  }
+
+  await Promise.all(lookups);
+  return rows.map((aircraft) => {
+    const key = aircraft.hex.replace(/^~/, "").toUpperCase();
+    const supplemental = metadataCache.get(key)?.data;
+    if (!supplemental) return aircraft;
+    return {
+      ...supplemental,
+      ...aircraft,
+      // Empty upstream strings should not erase useful supplemental values.
+      r: aircraft.r || supplemental.r,
+      t: aircraft.t || supplemental.t,
+      desc: aircraft.desc || supplemental.desc,
+      ownOp: aircraft.ownOp || supplemental.ownOp,
+      photoUrl: aircraft.photoUrl || supplemental.photoUrl,
+      photoThumbnailUrl: aircraft.photoThumbnailUrl || supplemental.photoThumbnailUrl,
+    };
+  });
+}
+
 async function fetchFeed(url: string, source: AircraftPayload["source"]): Promise<AircraftPayload> {
   const res = await fetch(url, {
     headers: { "User-Agent": "plane-spotter/0.4 (personal use)" },
@@ -73,6 +152,7 @@ export async function GET(req: Request) {
   for (const [index, feed] of feeds.entries()) {
     try {
       const payload = await fetchFeed(feed.url, feed.source);
+      payload.ac = await supplementAircraft(payload.ac);
       if (index > 0) payload.fallback = true;
       cache.set(key, { t: nowMs, data: payload });
       if (cache.size > MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value!);

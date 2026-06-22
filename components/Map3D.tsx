@@ -34,22 +34,24 @@ interface MotionState {
 
 // Emoji atlas: cell 0 = airplane, cell 1 = helicopter.
 function makeIconAtlas(): string {
-  const cell = 128;
+  // Leave generous transparent padding: a rotated color emoji otherwise clips
+  // its wing tips on high-density iPhone canvases.
+  const cell = 192;
   const cv = document.createElement("canvas");
   cv.width = cell * 2;
   cv.height = cell;
   const ctx = cv.getContext("2d")!;
-  ctx.font = `${Math.round(cell * 0.72)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+  ctx.font = `${Math.round(cell * 0.54)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("✈️", cell * 0.5, cell * 0.55);
-  ctx.fillText("🚁", cell * 1.5, cell * 0.55);
+  ctx.fillText("✈️", cell * 0.5, cell * 0.51);
+  ctx.fillText("🚁", cell * 1.5, cell * 0.51);
   return cv.toDataURL();
 }
 
 const ICON_MAPPING = {
-  plane: { x: 0, y: 0, width: 128, height: 128, anchorX: 64, anchorY: 64, mask: false },
-  heli: { x: 128, y: 0, width: 128, height: 128, anchorX: 64, anchorY: 64, mask: false },
+  plane: { x: 0, y: 0, width: 192, height: 192, anchorX: 96, anchorY: 96, mask: false },
+  heli: { x: 192, y: 0, width: 192, height: 192, anchorX: 96, anchorY: 96, mask: false },
 };
 
 export default function Map3D({
@@ -281,24 +283,23 @@ export default function Map3D({
     updateTriggers: { getSize: selectedId },
   });
 
-  // A compact, locally rendered airline mark avoids a network request per
-  // aircraft and stays attached to the continuously animated position.
-  const airlineBadgeLayer = new TextLayer<RenderPlane>({
-    id: "airline-badges",
+  // Locally bundled real airline artwork stays crisp and avoids a network
+  // request per aircraft. Unknown/private operators simply get no logo.
+  const airlineLogoLayer = new IconLayer<RenderPlane>({
+    id: "airline-logos",
     data: animatedPlanes.filter((plane) => plane.airlineBadge),
     getPosition: (plane) => [plane.renderLon, plane.renderLat, altM(plane)],
-    getText: (plane) => plane.airlineBadge!.mark,
-    getSize: 9,
+    getIcon: (plane) => ({
+      url: plane.airlineBadge!.logo,
+      width: 64,
+      height: 64,
+      anchorX: 32,
+      anchorY: 32,
+      mask: false,
+    }),
+    getSize: 21,
     sizeUnits: "pixels",
-    getColor: (plane) => plane.airlineBadge!.foreground,
-    getPixelOffset: [0, 19],
-    getTextAnchor: "middle",
-    getAlignmentBaseline: "center",
-    fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    fontWeight: 700,
-    background: true,
-    getBackgroundColor: (plane) => plane.airlineBadge!.background,
-    backgroundPadding: [4, 2],
+    getPixelOffset: [0, 22],
     billboard: true,
     pickable: false,
   });
@@ -336,7 +337,7 @@ export default function Map3D({
     homeLayer,
     ...routeLayers(),
     glow,
-    airlineBadgeLayer,
+    airlineLogoLayer,
     planeLayer,
   ];
 
@@ -356,11 +357,12 @@ export default function Map3D({
     }),
     ...routeLayers(),
     glow,
-    airlineBadgeLayer,
+    airlineLogoLayer,
     planeLayer,
   ];
 
   const heli = sel ? isHelicopter(sel) : false;
+  const selectedAirline = sel ? airlineBadgeForCallsign(sel.flight) : undefined;
   const vs = sel?.baro_rate;
   const climb = vs != null && vs > 100 ? " ↑" : vs != null && vs < -100 ? " ↓" : "";
 
@@ -429,12 +431,16 @@ export default function Map3D({
             ×
           </button>
           <div className="pc-call">
+            {selectedAirline && <img className="pc-airline-logo" src={selectedAirline.logo} alt={selectedAirline.name} />}
             {heli ? "🚁 " : ""}
             {sel.callsign}
             {sel.t ? <span className="pc-type"> · {sel.t}</span> : null}
           </div>
           {(sel.desc || sel.ownOp) && (
             <div className="pc-sub">{[sel.desc, sel.ownOp].filter(Boolean).join(" · ")}</div>
+          )}
+          {sel.photoThumbnailUrl && (
+            <img className="pc-aircraft-photo" src={sel.photoThumbnailUrl} alt={`${sel.callsign} aircraft`} />
           )}
           <div className="pc-row">
             {fmtAlt(sel.alt_baro)}

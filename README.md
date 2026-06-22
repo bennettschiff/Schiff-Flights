@@ -11,6 +11,13 @@ as an automatic backup if the primary feed is unavailable. No key or signup is
 required. The app proxies them server-side (`app/api/aircraft/route.ts`) and
 retains the last successful snapshot through brief upstream outages.
 
+When a live feed omits an aircraft's registration, type, description, owner, or
+photo, the server supplements that row from **[ADSBDB](https://www.adsbdb.com/)**.
+Those slow-changing results (including misses) are cached for seven days, and
+only a small capped batch is fetched on each live poll. Some TIS-B targets,
+airport vehicles, military/privacy-address aircraft, and malformed callsigns
+will still remain unidentified because no public database has a safe match.
+
 ## Route confidence
 ADS-B transmits an aircraft identity and motion, not a trustworthy origin and
 destination. When a plane is selected, ADSBDB supplies a schedule candidate;
@@ -54,6 +61,11 @@ Anyone can configure their own view — no accounts:
 - **Cyan planes** = inside your view cone; grey = elsewhere in range.
 - **Sidebar list**, nearest first, with a compass arrow, altitude, speed,
   distance, and an **IN VIEW** badge. Tap a plane (map or list) for details.
+- On mobile, collapse the aircraft drawer to give the map the full screen, or
+  open **Flight camera** to place nearby aircraft labels over the rear camera.
+  Camera imagery never leaves the device.
+- Known airlines use locally bundled airline logo artwork; unknown and private
+  operators remain unbranded rather than receiving a guessed logo.
 
 ## Later: your own receiver (Path B)
 Because you have rooftop sky access, a ~$30 RTL-SDR dongle + 1090 MHz antenna
