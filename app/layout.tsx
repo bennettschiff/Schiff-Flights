@@ -2,13 +2,13 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Plane Spotter — what's in your sky",
+  title: "Schiff Flights — what's in your sky",
   description: "Live aircraft over your spot, focused on the direction you face.",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "Planes",
+    title: "Schiff",
   },
   icons: {
     icon: "/icon.svg",

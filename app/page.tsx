@@ -188,7 +188,7 @@ export default function Page() {
     const url = `${window.location.origin}${window.location.pathname}?${settingsToQuery(settings)}`;
     try {
       if (navigator.share) {
-        await navigator.share({ title: "Plane Spotter", url });
+        await navigator.share({ title: "Schiff Flights", url });
       } else {
         await navigator.clipboard.writeText(url);
         setToast("Link copied!");
@@ -216,7 +216,7 @@ export default function Page() {
         <div className="title-block">
           <h1>
             <span className="live-dot" aria-hidden />
-            Plane Spotter
+            Schiff Flights
           </h1>
           <div className="sub">
             {settings.label} · facing {cardinal(settings.heading)} · {settings.width}° view

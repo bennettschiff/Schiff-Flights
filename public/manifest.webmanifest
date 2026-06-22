@@ -1,6 +1,6 @@
 {
-  "name": "Plane Spotter",
-  "short_name": "Planes",
+  "name": "Schiff Flights",
+  "short_name": "Schiff",
   "description": "Live aircraft over your spot, focused on the direction you face.",
   "start_url": "/",
   "display": "standalone",
