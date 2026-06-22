@@ -138,6 +138,7 @@ export default function Page() {
 
   // Poll whenever settings change.
   useEffect(() => {
+    if (!configured) return;
     load(settings);
     let timer: ReturnType<typeof setInterval> | null = null;
     const start = () => {
@@ -160,7 +161,7 @@ export default function Page() {
       stop();
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [settings, load]);
+  }, [configured, settings, load]);
 
   useEffect(() => {
     if (

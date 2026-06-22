@@ -106,6 +106,10 @@ export function assessRoute(route: RouteInfo, observation: RouteObservation): Ro
   if (
     typeof observation.track === "number" &&
     geometry.distanceToDestinationNm > 100 &&
+    // Airliners commonly depart on a runway heading that points away from the
+    // destination, then turn onto the route after several miles. Do not reject
+    // a schedule match while the aircraft is still in that departure phase.
+    geometry.distanceToOriginNm > Math.max(40, geometry.routeLengthNm * 0.1) &&
     Math.abs(
       signedAngleDifference(
         observation.track,

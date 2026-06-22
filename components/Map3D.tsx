@@ -156,7 +156,11 @@ export default function Map3D({
   }
 
   const sel = selectedId ? planes.find((p) => p.id === selectedId) : null;
-  const routeUsable = route?.confidence === "verified" || route?.confidence === "plausible";
+  // Geometry-rejected schedule matches stay hidden. An uncertain match that
+  // still fits the route may be shown with a clear caveat instead of making a
+  // commercial flight look as though it has no route data at all.
+  const routeUsable =
+    Boolean(route?.origin && route?.destination) && route?.confidence !== "rejected";
 
   // Project every fresh ADS-B snapshot forward to this frame, then gently
   // absorb the small correction when the next real position arrives. The list
@@ -455,6 +459,12 @@ export default function Map3D({
           {route && !routeUsable && (
             <div className="pc-route-note">
               <b>Route hidden</b> · {route.reason || "Schedule match could not be verified."}
+            </div>
+          )}
+
+          {route?.confidence === "uncertain" && routeUsable && (
+            <div className="pc-route-note">
+              <b>Schedule match</b> · {route.reason || "Route is not fully verified yet."}
             </div>
           )}
 

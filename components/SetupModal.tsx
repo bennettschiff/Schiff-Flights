@@ -100,7 +100,7 @@ export default function SetupModal({
             </button>
           )}
         </div>
-        <p className="modal-sub">Enter your ZIP and point the dial the way you look out.</p>
+        <p className="modal-sub">Use your location or enter a ZIP, then point the dial the way you look out.</p>
 
         <label className="field-label" htmlFor="zip">Your ZIP code</label>
         <div className="zip-row">
@@ -108,7 +108,7 @@ export default function SetupModal({
             id="zip"
             inputMode="numeric"
             maxLength={5}
-            placeholder="19122"
+            placeholder="e.g. 19122"
             value={zip}
             onChange={(e) => setZip(e.target.value.replace(/\D/g, ""))}
             onKeyDown={(e) => e.key === "Enter" && lookup()}

@@ -38,6 +38,18 @@ test("accepts a position near a claimed PHL-BOS corridor", () => {
   assert.ok((result.crossTrackNm ?? Infinity) < 35);
 });
 
+test("accepts a commercial flight still on an opposite-direction departure heading", () => {
+  const result = assessRoute(
+    route(airport("PHL", 39.8719, -75.2411), airport("MIA", 25.7932, -80.2906)),
+    // A southbound flight can initially depart north/east for its assigned
+    // runway before turning toward Florida.
+    { lat: 39.92, lon: -75.18, track: 40, altitude: 4075 }
+  );
+
+  assert.equal(result.confidence, "plausible");
+  assert.ok((result.distanceToOriginNm ?? Infinity) < 10);
+});
+
 test("rejects a ground aircraft far from both claimed airports", () => {
   const result = assessRoute(
     route(airport("PHX", 33.4353, -112.0059), airport("MIA", 25.7932, -80.2906)),

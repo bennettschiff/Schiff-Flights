@@ -12,14 +12,14 @@ export interface Settings {
   radiusNm: number; // how far out to pull aircraft
 }
 
-// Sensible default (the original 19122 balcony) so the app works out of the box.
+// Neutral, unconfigured map state. Fresh visitors must explicitly choose a
+// location; personal locations only come from a shared URL or localStorage.
 export const DEFAULT_SETTINGS: Settings = {
-  lat: 39.974,
-  lon: -75.141,
-  label: "Philadelphia, PA",
-  zip: "19122",
-  heading: 150, // SE-ish
-  width: 30,
+  lat: 39.8283,
+  lon: -98.5795,
+  label: "Choose a location",
+  heading: 180,
+  width: 45,
   radiusNm: 40,
 };
 
