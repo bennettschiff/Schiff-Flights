@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { cardinal, fmtAlt, fmtSpeed, fmtDist, isHelicopter } from "@/lib/format";
+import { cardinal, fmtAlt, fmtSpeed, fmtDist, isHelicopter, isMedical } from "@/lib/format";
 import type { Plane } from "@/lib/types";
-import { airlineBadgeForCallsign } from "@/lib/airlines";
+import { operatorBadge } from "@/lib/airlines";
 
 function Compass({ deg }: { deg: number }) {
   // Arrow points in the compass direction from you to the aircraft.
@@ -37,7 +37,8 @@ export default function AircraftList({
     <>
       {planes.map((p) => {
         const active = p.id === selectedId;
-        const airline = airlineBadgeForCallsign(p.flight);
+        const airline = operatorBadge(p);
+        const medical = isMedical(p);
         return (
           <div
             key={p.id}
@@ -51,6 +52,7 @@ export default function AircraftList({
                 {airline && <img className="row-airline-logo" src={airline.logo} alt={airline.name} />}
                 {isHelicopter(p) ? "🚁 " : ""}
                 {p.callsign}
+                {medical && <span className="badge badge-medical" title="Medical / air ambulance">✚ MED</span>}
                 {p.inView && <span className="badge">IN VIEW</span>}
               </div>
               <div className="meta">

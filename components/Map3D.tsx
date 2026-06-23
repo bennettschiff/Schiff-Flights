@@ -8,8 +8,8 @@ import { Tile3DLayer, GreatCircleLayer } from "@deck.gl/geo-layers";
 import { Tiles3DLoader } from "@loaders.gl/3d-tiles";
 import { conePolygon, distanceNm } from "@/lib/geo";
 import { projectAircraftPosition } from "@/lib/motion";
-import { airlineBadgeForCallsign, type AirlineBadge } from "@/lib/airlines";
-import { fmtAlt, fmtSpeed, fmtDist, cardinal, fmtDuration, fmtClock, isHelicopter } from "@/lib/format";
+import { operatorBadge, type AirlineBadge } from "@/lib/airlines";
+import { fmtAlt, fmtSpeed, fmtDist, cardinal, fmtDuration, fmtClock, isHelicopter, isMedical } from "@/lib/format";
 import type { Plane, RouteInfo, Airport } from "@/lib/types";
 import Basemap2D from "@/components/Basemap2D";
 
@@ -191,7 +191,7 @@ export default function Map3D({
         ...plane,
         renderLat: state.lat,
         renderLon: state.lon,
-        airlineBadge: airlineBadgeForCallsign(plane.flight),
+        airlineBadge: operatorBadge(plane),
       };
     });
 
@@ -308,6 +308,27 @@ export default function Map3D({
     pickable: false,
   });
 
+  // Red medical cross pinned just below any air-ambulance flight — mostly the
+  // HEMS helicopters registered to hospitals and medical operators.
+  const medicalLayer = new IconLayer<RenderPlane>({
+    id: "medical-cross",
+    data: animatedPlanes.filter((plane) => isMedical(plane)),
+    getPosition: (plane) => [plane.renderLon, plane.renderLat, altM(plane)],
+    getIcon: () => ({
+      url: "/medical-cross.svg",
+      width: 64,
+      height: 64,
+      anchorX: 32,
+      anchorY: 32,
+      mask: false,
+    }),
+    getSize: 16,
+    sizeUnits: "pixels",
+    getPixelOffset: [0, 24],
+    billboard: true,
+    pickable: false,
+  });
+
   const coneLayer = new PolygonLayer<{ polygon: [number, number][] }>({
     id: "cone",
     data: showFieldOfView
@@ -342,6 +363,7 @@ export default function Map3D({
     ...routeLayers(),
     glow,
     airlineLogoLayer,
+    medicalLayer,
     planeLayer,
   ];
 
@@ -362,11 +384,13 @@ export default function Map3D({
     ...routeLayers(),
     glow,
     airlineLogoLayer,
+    medicalLayer,
     planeLayer,
   ];
 
   const heli = sel ? isHelicopter(sel) : false;
-  const selectedAirline = sel ? airlineBadgeForCallsign(sel.flight) : undefined;
+  const selectedAirline = sel ? operatorBadge(sel) : undefined;
+  const selMedical = sel ? isMedical(sel) : false;
   const vs = sel?.baro_rate;
   const climb = vs != null && vs > 100 ? " ↑" : vs != null && vs < -100 ? " ↓" : "";
 
@@ -440,8 +464,12 @@ export default function Map3D({
             {sel.callsign}
             {sel.t ? <span className="pc-type"> · {sel.t}</span> : null}
           </div>
-          {(sel.desc || sel.ownOp) && (
-            <div className="pc-sub">{[sel.desc, sel.ownOp].filter(Boolean).join(" · ")}</div>
+          {selectedAirline?.kind === "private" && (
+            <div className="pc-sub pc-operator">Operated by {selectedAirline.name}</div>
+          )}
+          {sel.desc && <div className="pc-sub">{sel.desc}</div>}
+          {sel.ownOp && (
+            <div className="pc-sub pc-owner">Registered owner · {sel.ownOp}</div>
           )}
           {sel.photoThumbnailUrl && (
             <img className="pc-aircraft-photo" src={sel.photoThumbnailUrl} alt={`${sel.callsign} aircraft`} />
@@ -453,6 +481,7 @@ export default function Map3D({
           <div className="pc-row">
             {fmtDist(sel.distNm)} to your {cardinal(sel.brg)} ({Math.round(sel.brg)}°)
           </div>
+          {selMedical && <span className="pc-medical">✚ Medical / air ambulance</span>}
           {sel.inView && <span className="pc-inview">In your view</span>}
           {sel.localOperation && <span className="pc-operation">{sel.localOperation.label}</span>}
 

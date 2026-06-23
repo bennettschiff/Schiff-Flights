@@ -47,3 +47,24 @@ export function isHelicopter(p: { category?: string; t?: string; desc?: string }
   const d = (p.desc || "").toUpperCase();
   return d.includes("HELI") || d.includes("ROTOR");
 }
+
+// High-precision medical / air-ambulance phrases. Matched against the
+// registered owner/operator, the description and the callsign — these are the
+// only free signals for HEMS, as ADS-B carries no medical flag.
+const MEDICAL_PATTERNS = [
+  "MEDICAL", "MEDEVAC", "MED-EVAC", "MED EVAC", "MEDFLIGHT", "MED FLIGHT",
+  "MEDTRANS", "MED-TRANS", "LIFEFLIGHT", "LIFE FLIGHT", "LIFE NET", "LIFENET",
+  "LIFEGUARD", "LIFE GUARD", "AIR METHODS", "AIR EVAC", "AIR AMBULANCE",
+  "AMBULANCE", "AIRMED", "AIR MEDICAL", "AIRLIFE", "AIR LIFE", "HEMS",
+  "CARE FLIGHT", "CAREFLIGHT", "CARE FLITE", "SURVIVAL FLIGHT", "MERCY FLIGHT",
+  "MERCY AIR", "STARFLIGHT", "STAR FLIGHT", "FLIGHT FOR LIFE", "METRO AVIATION",
+  "PHI AIR MEDICAL", "REACH AIR", "CALSTAR", "HOSPITAL", "HEALTHCARE",
+  "HEALTH SYSTEM", "HEALTH NETWORK", "CLINIC", "SHANDS",
+];
+
+/** True when ownership/description/callsign indicate a medical (air-ambulance) flight. */
+export function isMedical(p: { ownOp?: string; desc?: string; flight?: string }): boolean {
+  const haystack = `${p.ownOp ?? ""} ${p.desc ?? ""} ${p.flight ?? ""}`.toUpperCase();
+  if (!haystack.trim()) return false;
+  return MEDICAL_PATTERNS.some((pattern) => haystack.includes(pattern));
+}

@@ -4,11 +4,16 @@ export interface AirlineBadge {
   logo: string;
   background: [number, number, number, number];
   foreground: [number, number, number, number];
+  // "commercial" = scheduled airline matched from the callsign; "private" =
+  // fractional/charter operator or business-jet manufacturer. Absent on the
+  // legacy commercial-only helper so its return shape stays stable.
+  kind?: "commercial" | "private";
 }
 
-type BadgeDefinition = Omit<AirlineBadge, "foreground" | "logo"> & {
+type BadgeDefinition = Omit<AirlineBadge, "foreground" | "logo" | "kind"> & {
   foreground?: [number, number, number, number];
   logoCode?: string;
+  logoFile?: string; // full filename (with extension) under /airline-logos
 };
 
 const WHITE: [number, number, number, number] = [255, 255, 255, 255];
@@ -54,6 +59,104 @@ const AIRLINES: Record<string, BadgeDefinition> = {
   GTI: { mark: "5Y", name: "Atlas Air", background: [19, 66, 121, 245] },
 };
 
+// Fractional / charter operators. Their aircraft are registered to banks,
+// trusts and leasing SPVs just like airliners, so the callsign — not the
+// owner — is the only reliable identifier. Mapped to brand-coloured wordmarks.
+const PRIVATE_OPERATORS: Record<string, BadgeDefinition> = {
+  EJA: { mark: "NJ", name: "NetJets", background: [20, 60, 110, 250], logoFile: "netjets.svg" },
+  NJE: { mark: "NJ", name: "NetJets Europe", background: [20, 60, 110, 250], logoFile: "netjets.svg" },
+  EJM: { mark: "NJ", name: "Executive Jet Management", background: [20, 60, 110, 250], logoFile: "netjets.svg" },
+  LXJ: { mark: "FJ", name: "Flexjet", background: [150, 16, 40, 250], logoFile: "flexjet.svg" },
+  VJT: { mark: "VJ", name: "VistaJet", background: [17, 17, 17, 250], foreground: [212, 175, 55, 255], logoFile: "vistajet.svg" },
+  PSN: { mark: "PS", name: "PlaneSense", background: [10, 125, 90, 250], logoFile: "planesense.svg" },
+  XOJ: { mark: "XO", name: "XO", background: [17, 17, 17, 250], logoFile: "xo.svg" },
+};
+
+// Business-jet manufacturers keyed by ICAO type code. When no operator can be
+// read from the callsign, the airframe itself still tells us it is a private
+// jet — a Gulfstream squawking its tail number gets a maker badge.
+interface MakerDefinition {
+  name: string;
+  mark: string;
+  logoFile: string;
+  background: [number, number, number, number];
+  foreground?: [number, number, number, number];
+  codes: string[];
+}
+
+const MAKERS: MakerDefinition[] = [
+  {
+    name: "Gulfstream",
+    mark: "G",
+    logoFile: "gulfstream.svg",
+    background: [11, 37, 64, 250],
+    codes: ["GLF2", "GLF3", "GLF4", "GLF5", "GLF6", "G150", "G280", "GA5C", "GA6C", "GA7C"],
+  },
+  {
+    name: "Bombardier",
+    mark: "B",
+    logoFile: "bombardier.svg",
+    background: [11, 61, 145, 250],
+    codes: [
+      "GLEX", "GL5T", "GL7T", "GL5000", "CL30", "CL35", "CL60", "CL600", "CL604",
+      "LJ31", "LJ35", "LJ40", "LJ45", "LJ55", "LJ60", "LJ70", "LJ75",
+    ],
+  },
+  {
+    name: "Cessna Citation",
+    mark: "C",
+    logoFile: "cessna.svg",
+    background: [179, 18, 44, 250],
+    codes: [
+      "C25A", "C25B", "C25C", "C25M", "C500", "C501", "C510", "C525", "C526",
+      "C550", "C551", "C560", "C56X", "C650", "C680", "C68A", "C700", "C750",
+    ],
+  },
+  {
+    name: "Embraer Executive",
+    mark: "E",
+    logoFile: "embraer.svg",
+    background: [27, 78, 160, 250],
+    codes: ["E50P", "E55P", "E545", "E550", "E35L"],
+  },
+  {
+    name: "Dassault Falcon",
+    mark: "F",
+    logoFile: "falcon.svg",
+    background: [42, 61, 86, 250],
+    codes: ["FA50", "FA5X", "FA6X", "FA7X", "FA8X", "F2TH", "F900", "FA10", "FA20", "FA30", "FA40", "F2000"],
+  },
+  {
+    name: "Hawker",
+    mark: "H",
+    logoFile: "hawker.svg",
+    background: [90, 74, 42, 250],
+    codes: ["H25A", "H25B", "H25C", "HA4T", "BE40"],
+  },
+];
+
+const GENERIC_PRIVATE: BadgeDefinition = {
+  mark: "P",
+  name: "Private jet",
+  background: [71, 85, 105, 250],
+  logoFile: "private-jet.svg",
+};
+
+// Light / very-light jets and turboprops that fly mostly privately but have no
+// dedicated maker badge above. They still get the generic private indicator.
+const GENERIC_PRIVATE_TYPES = new Set(["PC24", "PC12", "HDJT", "SF50", "TBM7", "TBM8", "TBM9", "EA50"]);
+
+const MAKER_BY_CODE = new Map<string, MakerDefinition>();
+for (const maker of MAKERS) {
+  for (const code of maker.codes) MAKER_BY_CODE.set(code, maker);
+}
+
+function resolveLogo(def: { logoFile?: string; logoCode?: string; mark: string }): string {
+  return def.logoFile
+    ? `/airline-logos/${def.logoFile}`
+    : `/airline-logos/${def.logoCode ?? def.mark}.png`;
+}
+
 export function airlineBadgeForCallsign(callsign?: string): AirlineBadge | undefined {
   const compact = callsign?.trim().toUpperCase().replace(/\s+/g, "");
   if (!compact || !/^[A-Z]{3}\d/.test(compact)) return undefined;
@@ -64,4 +167,38 @@ export function airlineBadgeForCallsign(callsign?: string): AirlineBadge | undef
     logo: `/airline-logos/${badge.logoCode ?? badge.mark}.png`,
     foreground: badge.foreground ?? WHITE,
   };
+}
+
+function privateOperatorForCallsign(callsign?: string): AirlineBadge | undefined {
+  const compact = callsign?.trim().toUpperCase().replace(/\s+/g, "");
+  if (!compact || !/^[A-Z]{3}\d/.test(compact)) return undefined;
+  const def = PRIVATE_OPERATORS[compact.slice(0, 3)];
+  if (!def) return undefined;
+  return { ...def, logo: resolveLogo(def), foreground: def.foreground ?? WHITE, kind: "private" };
+}
+
+function bizjetMakerBadge(typeCode?: string): AirlineBadge | undefined {
+  const code = typeCode?.trim().toUpperCase();
+  if (!code) return undefined;
+  const maker = MAKER_BY_CODE.get(code);
+  if (maker) {
+    return { ...maker, logo: resolveLogo(maker), foreground: maker.foreground ?? WHITE, kind: "private" };
+  }
+  if (GENERIC_PRIVATE_TYPES.has(code)) {
+    return { ...GENERIC_PRIVATE, logo: resolveLogo(GENERIC_PRIVATE), foreground: WHITE, kind: "private" };
+  }
+  return undefined;
+}
+
+// Unified resolver used by the UI: a scheduled airline wins, then a known
+// fractional/charter operator, then the airframe maker for an unaffiliated
+// business jet. Owner/registration is deliberately never used here — it names
+// the bank or lessor that holds the aircraft, not who operates it.
+export function operatorBadge(plane: {
+  flight?: string;
+  t?: string;
+}): AirlineBadge | undefined {
+  const commercial = airlineBadgeForCallsign(plane.flight);
+  if (commercial) return { ...commercial, kind: "commercial" };
+  return privateOperatorForCallsign(plane.flight) ?? bizjetMakerBadge(plane.t);
 }

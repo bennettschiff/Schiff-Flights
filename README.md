@@ -1,8 +1,10 @@
 # Schiff Flights
 
-A personal live flight tracker centered on **19122 (Philadelphia)**, with your
-balcony's view cone (**SE 120° → S 180°**) highlighted. Free data, no API keys,
-no ads. Runs as a website on your laptop and installs to your iPhone home screen.
+A personal live flight tracker. Pick any location and the compass direction you
+face, and it highlights the slice of sky in your view. Free ADS-B data and no
+ads; the optional photorealistic **3D** map uses a Google Maps Platform key
+(`NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` in `.env.local`). Runs as a website on your
+laptop and installs to your iPhone home screen.
 
 ## Data source
 Live aircraft come from the free, community-run **[airplanes.live](https://airplanes.live/api-guide/)**
@@ -57,15 +59,30 @@ Anyone can configure their own view — no accounts:
   interval and zoom in [`lib/config.ts`](lib/config.ts).
 
 ## What you see
-- **Dark radar map** centered on home, with a cyan **view wedge**.
-- **Cyan planes** = inside your view cone; grey = elsewhere in range.
+- A warm **light/tan map** centered on your spot, with a clay **view wedge** for
+  the direction you face. Toggle between **Map**, **Satellite**, and a
+  photorealistic **3D** view (Google 3D Tiles).
+- **Emoji aircraft** drawn at true altitude — clay = inside your view cone, grey
+  = elsewhere in range, **🚁** for helicopters.
 - **Sidebar list**, nearest first, with a compass arrow, altitude, speed,
-  distance, and an **IN VIEW** badge. Tap a plane (map or list) for details.
+  distance, an airline mark, local arrival/departure labels, and an **IN VIEW**
+  badge. Tap a plane (map or list) for a detail card.
+- **Operator badges** come from the callsign — scheduled airlines, plus
+  fractional / charter operators (NetJets, Flexjet, VistaJet…) — or, when there
+  is no operator callsign, from the airframe type (Gulfstream, Bombardier,
+  Cessna…). They are **never** taken from the registered owner, which for most
+  airliners is a leasing bank or trust, not the operator. Medical / air-ambulance
+  flights get a red ✚ marker.
+- The **detail card** shows aircraft type and the registered owner (labelled as
+  such), distance and bearing to you, and — when a schedule match passes the live
+  plausibility check — origin → destination, a drawn route corridor, and
+  approximate trip progress (percent, distance, ETA). Routes that can't be
+  verified are hidden with a reason.
 - On mobile, collapse the aircraft drawer to give the map the full screen, or
   open **Flight camera** to place nearby aircraft labels over the rear camera.
   Camera imagery never leaves the device.
-- Known airlines use locally bundled airline logo artwork; unknown and private
-  operators remain unbranded rather than receiving a guessed logo.
+- Airlines and major private operators use locally bundled logo marks;
+  unrecognised aircraft stay unbranded rather than receiving a guessed logo.
 
 ## Later: your own receiver (Path B)
 Because you have rooftop sky access, a ~$30 RTL-SDR dongle + 1090 MHz antenna

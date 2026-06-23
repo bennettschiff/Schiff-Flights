@@ -152,6 +152,12 @@ html, body {
   color: var(--text); background: var(--panel-2); border: 1px solid var(--border);
   padding: 2px 7px; border-radius: 5px;
 }
+.pc-operator { color: var(--text); font-weight: 600; }
+.pc-owner { font-style: italic; }
+.pc-medical {
+  display: inline-block; margin-top: 8px; font-size: 10px; font-weight: 700; color: #fff;
+  background: rgb(209,24,32); padding: 2px 7px; border-radius: 5px;
+}
 .pc-route-note {
   margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border);
   color: var(--muted); font-size: 11px; line-height: 1.35;
@@ -209,6 +215,7 @@ html, body {
   color: #fff; background: var(--accent); padding: 2px 5px; border-radius: 4px;
   margin-left: 6px; vertical-align: middle;
 }
+.badge-medical { background: rgb(209,24,32); }
 .empty { padding: 24px 14px; color: var(--muted); font-size: 13px; text-align: center; }
 
 /* ── Plane markers ──────────────────────────────────── */

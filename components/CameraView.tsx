@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { airlineBadgeForCallsign } from "@/lib/airlines";
+import { operatorBadge } from "@/lib/airlines";
 import { fmtAlt, fmtDist } from "@/lib/format";
 import type { Plane } from "@/lib/types";
 
@@ -141,7 +141,7 @@ export default function CameraView({
         <>
           <div className="camera-reticle" aria-hidden />
           {visible.map(({ plane, x, y }) => {
-            const airline = airlineBadgeForCallsign(plane.flight);
+            const airline = operatorBadge(plane);
             return (
               <button
                 type="button"
