@@ -15,7 +15,7 @@ import {
 } from "@/lib/settings";
 import { cardinal } from "@/lib/format";
 import { annotateLocalOperations, type TrackHistory } from "@/lib/operations";
-import type { Plane, RawAircraft, RouteInfo } from "@/lib/types";
+import type { Plane, RawAircraft, RouteAudit, RouteInfo } from "@/lib/types";
 import AircraftList from "@/components/AircraftList";
 import SetupModal from "@/components/SetupModal";
 import MapCompass from "@/components/MapCompass";
@@ -66,6 +66,7 @@ export default function Page() {
   const [planes, setPlanes] = useState<Plane[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [route, setRoute] = useState<RouteInfo | null>(null);
+  const [routeAudit, setRouteAudit] = useState<RouteAudit | null>(null);
   const [mode, setMode] = useState<ViewMode>("light");
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -177,13 +178,39 @@ export default function Page() {
   useEffect(() => {
     if (!selectedId) {
       setRoute(null);
+      setRouteAudit(null);
       return;
     }
     const p = planes.find((x) => x.id === selectedId);
     setRoute(null);
+    setRouteAudit(null);
     if (!p) return;
     const cs = p.flight?.trim();
-    if (!cs) return;
+    if (!cs) {
+      if (p.localOperation) {
+        const airport = p.localOperation.airport;
+        const action =
+          p.localOperation.kind === "arriving"
+            ? `Observed descending toward ${airport}.`
+            : p.localOperation.kind === "departing"
+              ? `Observed climbing away from ${airport}.`
+              : `Observed on the ground at ${airport}.`;
+        setRouteAudit({
+          status: "observed_local",
+          provider: "local",
+          reason: `${action} No usable callsign was available for a schedule lookup.`,
+          originHint:
+            p.localOperation.kind === "departing" || p.localOperation.kind === "ground"
+              ? airport
+              : undefined,
+          destinationHint:
+            p.localOperation.kind === "arriving" || p.localOperation.kind === "ground"
+              ? airport
+              : undefined,
+        });
+      }
+      return;
+    }
     let cancelled = false;
     const params = new URLSearchParams({
       callsign: cs,
@@ -192,10 +219,19 @@ export default function Page() {
     });
     if (typeof p.track === "number") params.set("track", String(p.track));
     if (p.alt_baro != null) params.set("altitude", String(p.alt_baro));
+    if (p.route_origin) params.set("route_origin", p.route_origin);
+    if (p.route_dest) params.set("route_dest", p.route_dest);
+    if (p.localOperation) {
+      params.set("local_kind", p.localOperation.kind);
+      params.set("local_airport", p.localOperation.airport);
+    }
     fetch(`/api/route?${params}`)
       .then((r) => r.json())
       .then((d) => {
-        if (!cancelled) setRoute(d.route ?? null);
+        if (!cancelled) {
+          setRoute(d.route ?? null);
+          setRouteAudit(d.audit ?? null);
+        }
       })
       .catch(() => {});
     return () => {
@@ -209,6 +245,7 @@ export default function Page() {
     setConfigured(true);
     setSetupOpen(false);
     setSelectedId(null);
+    setRouteAudit(null);
     saveStored(s);
     const q = trackerQuery(s, showFieldOfView);
     window.history.replaceState(null, "", `${window.location.pathname}?${q}`);
@@ -322,6 +359,7 @@ export default function Page() {
             planes={planes}
             selectedId={selectedId}
             route={route}
+            routeAudit={routeAudit}
             onSelect={setSelectedId}
             on3DError={handle3DError}
           />

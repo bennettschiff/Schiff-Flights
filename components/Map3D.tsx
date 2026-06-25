@@ -10,7 +10,7 @@ import { conePolygon, distanceNm } from "@/lib/geo";
 import { projectAircraftPosition } from "@/lib/motion";
 import { operatorBadge, type AirlineBadge } from "@/lib/airlines";
 import { fmtAlt, fmtSpeed, fmtDist, cardinal, fmtDuration, fmtClock, isHelicopter, isMedical } from "@/lib/format";
-import type { Plane, RouteInfo, Airport } from "@/lib/types";
+import type { Plane, RouteAudit, RouteInfo, Airport } from "@/lib/types";
 import Basemap2D from "@/components/Basemap2D";
 
 export type ViewMode = "light" | "satellite" | "3d";
@@ -64,6 +64,7 @@ export default function Map3D({
   planes,
   selectedId,
   route,
+  routeAudit,
   onSelect,
   on3DError,
 }: {
@@ -76,6 +77,7 @@ export default function Map3D({
   planes: Plane[];
   selectedId: string | null;
   route: RouteInfo | null;
+  routeAudit: RouteAudit | null;
   onSelect: (id: string | null) => void;
   on3DError: () => void;
 }) {
@@ -424,6 +426,11 @@ export default function Map3D({
     const eta = mins != null && isFinite(mins) ? new Date(Date.now() + mins * 60000) : null;
     prog = { o, d, along, remain, pct, mins, eta };
   }
+  const showAuditNote =
+    Boolean(routeAudit) &&
+    !prog &&
+    !(route && !routeUsable) &&
+    routeAudit?.status !== "identified";
 
   return (
     <div style={{ position: "absolute", inset: 0 }}>
@@ -488,6 +495,19 @@ export default function Map3D({
           {route && !routeUsable && (
             <div className="pc-route-note">
               <b>Route hidden</b> · {route.reason || "Schedule match could not be verified."}
+            </div>
+          )}
+
+          {showAuditNote && routeAudit && (
+            <div className="pc-route-note">
+              <b>
+                {routeAudit.status === "observed_local"
+                  ? "Local movement"
+                  : routeAudit.status === "feed_hint_unresolved"
+                    ? "Route hint"
+                    : "Route not identified"}
+              </b>{" "}
+              · {routeAudit.reason}
             </div>
           )}
 

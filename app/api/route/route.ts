@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { assessRoute } from "@/lib/route-confidence";
-import type { Airport, RouteInfo } from "@/lib/types";
+import { findRegionalAirport } from "@/lib/airports";
+import type { Airport, RouteAudit, RouteInfo } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -21,13 +22,54 @@ function mapAirport(a: any): Airport | null {
   };
 }
 
+function mapRegionalAirport(code?: string): Airport | null {
+  const airport = findRegionalAirport(code);
+  if (!airport) return null;
+  return {
+    iata: airport.iata,
+    icao: airport.icao,
+    name: airport.name,
+    lat: airport.lat,
+    lon: airport.lon,
+  };
+}
+
+function routeResponse(route: RouteInfo | null, audit: RouteAudit) {
+  return NextResponse.json({ route, audit }, { status: 200 });
+}
+
 // Free callsign -> route (origin/destination) lookup via adsbdb. ADS-B itself
 // doesn't carry route info; this matches the callsign against a schedule DB.
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const callsign = (searchParams.get("callsign") ?? "").trim().toUpperCase().replace(/\s+/g, "");
+  const feedOrigin = (searchParams.get("route_origin") ?? "").trim().toUpperCase();
+  const feedDestination = (searchParams.get("route_dest") ?? "").trim().toUpperCase();
+  const localKind = searchParams.get("local_kind");
+  const localAirport = (searchParams.get("local_airport") ?? "").trim().toUpperCase();
+
+  const localAudit = (): RouteAudit | null => {
+    if (!localKind || !localAirport) return null;
+    const action =
+      localKind === "arriving"
+        ? `Observed descending toward ${localAirport}.`
+        : localKind === "departing"
+          ? `Observed climbing away from ${localAirport}.`
+          : `Observed on the ground at ${localAirport}.`;
+    return {
+      status: "observed_local",
+      provider: "local",
+      reason: `${action} No free public source supplied a complete origin-destination pair.`,
+      originHint: localKind === "departing" || localKind === "ground" ? localAirport : undefined,
+      destinationHint: localKind === "arriving" || localKind === "ground" ? localAirport : undefined,
+    };
+  };
+
   if (!/^[A-Z0-9]{2,12}$/.test(callsign)) {
-    return NextResponse.json({ route: null }, { status: 200 });
+    return routeResponse(null, {
+      status: "missing_callsign",
+      reason: "No usable callsign was available for a schedule lookup.",
+    });
   }
 
   const latRaw = searchParams.get("lat");
@@ -62,9 +104,58 @@ export async function GET(req: Request) {
     });
   };
 
+  const feedRoute = (() => {
+    if (!feedOrigin || !feedDestination) return null;
+    const origin = mapRegionalAirport(feedOrigin);
+    const destination = mapRegionalAirport(feedDestination);
+    if (!origin || !destination) return null;
+    return withConfidence({
+      callsign,
+      origin,
+      destination,
+      source: "tfms",
+    });
+  })();
+
+  if (feedRoute) {
+    const status = feedRoute.confidence === "rejected" ? "hidden" : "identified";
+    return routeResponse(feedRoute, {
+      status,
+      provider: "tfms",
+      reason:
+        status === "hidden"
+          ? feedRoute.reason || "The feed route hint contradicted the live aircraft position."
+          : "The live feed supplied route endpoints and the live position did not contradict them.",
+      originHint: feedOrigin,
+      destinationHint: feedDestination,
+    });
+  }
+
   const hit = cache.get(callsign);
   if (hit && Date.now() - hit.t < TTL_MS) {
-    return NextResponse.json({ route: withConfidence(hit.data) }, { status: 200 });
+    const checked = withConfidence(hit.data);
+    if (checked) {
+      return routeResponse(checked, {
+        status: checked.confidence === "rejected" ? "hidden" : "identified",
+        provider: "adsbdb",
+        reason:
+          checked.confidence === "rejected"
+            ? checked.reason || "ADSBDB had a schedule candidate, but live geometry rejected it."
+            : "ADSBDB supplied a schedule candidate for this callsign.",
+      });
+    }
+    const fallbackAudit = localAudit();
+    if (fallbackAudit) return routeResponse(null, fallbackAudit);
+    return routeResponse(null, {
+      status: feedOrigin || feedDestination ? "feed_hint_unresolved" : "no_public_match",
+      provider: feedOrigin || feedDestination ? "tfms" : "adsbdb",
+      reason:
+        feedOrigin || feedDestination
+          ? "The live feed included route text, but this app could not resolve both endpoints for geometry checks."
+          : "ADSBDB did not have a public schedule match for this callsign.",
+      originHint: feedOrigin || undefined,
+      destinationHint: feedDestination || undefined,
+    });
   }
 
   try {
@@ -75,13 +166,30 @@ export async function GET(req: Request) {
     });
     if (!res.ok) {
       cache.set(callsign, { t: Date.now(), data: null });
-      return NextResponse.json({ route: null }, { status: 200 });
+      const fallbackAudit = localAudit();
+      if (fallbackAudit) return routeResponse(null, fallbackAudit);
+      return routeResponse(null, {
+        status: "no_public_match",
+        provider: "adsbdb",
+        reason: `ADSBDB route lookup returned ${res.status}.`,
+      });
     }
     const json = await res.json();
     const fr = json?.response?.flightroute;
     if (!fr) {
       cache.set(callsign, { t: Date.now(), data: null });
-      return NextResponse.json({ route: null }, { status: 200 });
+      const fallbackAudit = localAudit();
+      if (fallbackAudit) return routeResponse(null, fallbackAudit);
+      return routeResponse(null, {
+        status: feedOrigin || feedDestination ? "feed_hint_unresolved" : "no_public_match",
+        provider: feedOrigin || feedDestination ? "tfms" : "adsbdb",
+        reason:
+          feedOrigin || feedDestination
+            ? "The live feed included route text, but this app could not resolve both endpoints for geometry checks."
+            : "ADSBDB did not have a public schedule match for this callsign.",
+        originHint: feedOrigin || undefined,
+        destinationHint: feedDestination || undefined,
+      });
     }
     const route: RouteInfo = {
       callsign,
@@ -91,8 +199,22 @@ export async function GET(req: Request) {
       source: "adsbdb",
     };
     cache.set(callsign, { t: Date.now(), data: route });
-    return NextResponse.json({ route: withConfidence(route) }, { status: 200 });
+    const checked = withConfidence(route);
+    return routeResponse(checked, {
+      status: checked?.confidence === "rejected" ? "hidden" : "identified",
+      provider: "adsbdb",
+      reason:
+        checked?.confidence === "rejected"
+          ? checked.reason || "ADSBDB had a schedule candidate, but live geometry rejected it."
+          : "ADSBDB supplied a schedule candidate for this callsign.",
+    });
   } catch {
-    return NextResponse.json({ route: null }, { status: 200 });
+    const fallbackAudit = localAudit();
+    if (fallbackAudit) return routeResponse(null, fallbackAudit);
+    return routeResponse(null, {
+      status: "no_public_match",
+      provider: "adsbdb",
+      reason: "ADSBDB route lookup failed before returning a public schedule match.",
+    });
   }
 }

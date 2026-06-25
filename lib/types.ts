@@ -36,7 +36,7 @@ export interface RouteInfo {
   airline?: string;
   origin: Airport | null;
   destination: Airport | null;
-  source?: "adsbdb" | "tfms";
+  source?: "adsbdb" | "tfms" | "local";
   confidence?: "verified" | "plausible" | "uncertain" | "rejected";
   reason?: string;
   crossTrackNm?: number;
@@ -44,6 +44,20 @@ export interface RouteInfo {
   routeLengthNm?: number;
   distanceToOriginNm?: number;
   distanceToDestinationNm?: number;
+}
+
+export interface RouteAudit {
+  status:
+    | "identified"
+    | "missing_callsign"
+    | "no_public_match"
+    | "hidden"
+    | "feed_hint_unresolved"
+    | "observed_local";
+  provider?: "adsbdb" | "tfms" | "local";
+  reason: string;
+  originHint?: string;
+  destinationHint?: string;
 }
 
 export interface LocalOperation {

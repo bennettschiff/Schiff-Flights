@@ -17,3 +17,11 @@ export const REGIONAL_AIRPORTS: RegionalAirport[] = [
   { icao: "KACY", iata: "ACY", name: "Atlantic City International", lat: 39.4576, lon: -74.5772 },
   { icao: "KLOM", iata: "LOM", name: "Wings Field", lat: 40.1375, lon: -75.2651 },
 ];
+
+export function findRegionalAirport(code?: string): RegionalAirport | undefined {
+  const normalized = code?.trim().toUpperCase();
+  if (!normalized) return undefined;
+  return REGIONAL_AIRPORTS.find(
+    (airport) => airport.iata === normalized || airport.icao === normalized
+  );
+}
