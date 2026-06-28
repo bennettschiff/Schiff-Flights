@@ -25,6 +25,7 @@ export default function SetupModal({
   const [zip, setZip] = useState(initial.zip ?? "");
   const [heading, setHeading] = useState(initial.heading);
   const [width, setWidth] = useState(initial.width);
+  const [localFeedUrl, setLocalFeedUrl] = useState(initial.localFeedUrl ?? "");
   const [resolved, setResolved] = useState<Resolved | null>(
     initial.zip ? { lat: initial.lat, lon: initial.lon, label: initial.label, zip: initial.zip } : null
   );
@@ -86,6 +87,7 @@ export default function SetupModal({
       heading: normHeading(heading),
       width: clampWidth(width),
       radiusNm: initial.radiusNm,
+      localFeedUrl: localFeedUrl.trim() || undefined,
     });
   }
 
@@ -138,6 +140,26 @@ export default function SetupModal({
             onChange={(e) => setWidth(Number(e.target.value))}
           />
           <span className="width-val">{width}°</span>
+        </div>
+
+        <label className="field-label" style={{ marginTop: 18 }} htmlFor="local-feed">
+          Local ADS-B receiver <span style={{ fontWeight: 400, opacity: 0.6 }}>(optional)</span>
+        </label>
+        <input
+          id="local-feed"
+          type="url"
+          inputMode="url"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          placeholder="http://192.168.1.50:8080"
+          value={localFeedUrl}
+          onChange={(e) => setLocalFeedUrl(e.target.value)}
+        />
+        <div className="field-help">
+          Running a Raspberry Pi with dump1090/PiAware? Enter its address to pull live aircraft straight
+          from your own antenna. Used only from this browser on your home network; it falls back to public
+          feeds when the receiver is unreachable.
         </div>
 
         <button className="btn btn-primary" onClick={save} disabled={!resolved}>

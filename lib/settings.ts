@@ -10,6 +10,7 @@ export interface Settings {
   heading: number; // direction they face, compass degrees (0 = N)
   width: number; // total width of their view window, degrees
   radiusNm: number; // how far out to pull aircraft
+  localFeedUrl?: string; // optional self-hosted ADS-B receiver, e.g. "http://192.168.1.50:8080"
 }
 
 // Neutral, unconfigured map state. Fresh visitors must explicitly choose a

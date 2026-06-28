@@ -14,6 +14,7 @@ import {
   type Settings,
 } from "@/lib/settings";
 import { cardinal } from "@/lib/format";
+import { fetchLocalFeed } from "@/lib/localFeed";
 import { annotateLocalOperations, type TrackHistory } from "@/lib/operations";
 import type { Plane, RawAircraft, RouteAudit, RouteInfo } from "@/lib/types";
 import AircraftList from "@/components/AircraftList";
@@ -104,17 +105,24 @@ export default function Page() {
   const load = useCallback(async (s: Settings) => {
     const sequence = ++loadSequenceRef.current;
     try {
-      const res = await fetch(`/api/aircraft?lat=${s.lat}&lon=${s.lon}&radius=${s.radiusNm}`, {
-        cache: "no-store",
-      });
-      const data = (await res.json()) as {
-        ac: RawAircraft[];
-        now?: number;
-        error?: string;
-        source?: string;
-        fallback?: boolean;
-        stale?: boolean;
-      };
+      // Prefer a self-hosted receiver on the home LAN when one is configured;
+      // the browser can reach it even though the deployed server can't. Falls
+      // through to the public feeds whenever it's unset, off, or out of range.
+      const local = await fetchLocalFeed(s);
+      if (sequence !== loadSequenceRef.current) return;
+
+      const data = local
+        ? { ...local, error: undefined, fallback: false, stale: false }
+        : ((await fetch(`/api/aircraft?lat=${s.lat}&lon=${s.lon}&radius=${s.radiusNm}`, {
+            cache: "no-store",
+          }).then((r) => r.json())) as {
+            ac: RawAircraft[];
+            now?: number;
+            error?: string;
+            source?: string;
+            fallback?: boolean;
+            stale?: boolean;
+          });
       if (sequence !== loadSequenceRef.current) return;
       const now = Date.now();
       const sourceNow =
