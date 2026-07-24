@@ -1,5 +1,5 @@
 import { bearing, distanceNm, toRad } from "@/lib/geo";
-import type { RouteInfo } from "@/lib/types";
+import type { RouteInfo, RouteLeg } from "@/lib/types";
 
 const EARTH_RADIUS_NM = 3440.065;
 
@@ -82,7 +82,13 @@ export function assessRoute(route: RouteInfo, observation: RouteObservation): Ro
 
   // Long routes need a somewhat wider airway corridor, but never one so wide
   // that a Philadelphia aircraft can validate a route across the southern US.
-  const corridorNm = Math.max(35, Math.min(120, geometry.routeLengthNm * 0.12));
+  let corridorNm = Math.max(35, Math.min(120, geometry.routeLengthNm * 0.12));
+  // Departure and arrival vectoring routinely pushes an aircraft well off the
+  // direct line near an endpoint — a JFK departure bound for Santiago can be
+  // 100 nm west of the great circle before it turns south. Widen the corridor
+  // in the terminal area so that normal vectoring isn't read as a bad match.
+  // Only the ends are relaxed, so a cross-continent false match still fails.
+  if (endpointDistance < 175) corridorNm = Math.max(corridorNm, 110);
   if (geometry.crossTrackNm > corridorNm) {
     return {
       ...result,
@@ -129,4 +135,52 @@ export function assessRoute(route: RouteInfo, observation: RouteObservation): Ro
     confidence: "plausible",
     reason: `Live position is within ${Math.round(geometry.crossTrackNm)} nm of the claimed route.`,
   };
+}
+
+const CONFIDENCE_RANK: Record<string, number> = {
+  verified: 4,
+  plausible: 3,
+  uncertain: 2,
+  rejected: 1,
+};
+
+/**
+ * Score every leg of a rotation against the live position and return the one
+ * the aircraft is actually flying. The out-and-back case (CLT-BOS-CLT) is the
+ * reason this exists: both legs share a great circle, so cross-track distance
+ * can't separate them — the direction of travel, which assessRoute already
+ * weighs, is what decides it.
+ */
+export function pickBestLeg(
+  callsign: string,
+  legs: RouteLeg[],
+  observation: RouteObservation,
+  base: Partial<RouteInfo> = {}
+): RouteInfo | null {
+  let best: RouteInfo | null = null;
+  for (const leg of legs) {
+    const assessed = assessRoute(
+      {
+        ...base,
+        callsign,
+        origin: leg.origin,
+        destination: leg.destination,
+        legIndex: leg.legIndex,
+        legCount: leg.legCount,
+      },
+      observation
+    );
+    if (!best) {
+      best = assessed;
+      continue;
+    }
+    const rank = CONFIDENCE_RANK[assessed.confidence ?? "uncertain"] ?? 0;
+    const bestRank = CONFIDENCE_RANK[best.confidence ?? "uncertain"] ?? 0;
+    if (rank > bestRank) {
+      best = assessed;
+    } else if (rank === bestRank && (assessed.crossTrackNm ?? Infinity) < (best.crossTrackNm ?? Infinity)) {
+      best = assessed;
+    }
+  }
+  return best;
 }

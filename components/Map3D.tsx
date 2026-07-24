@@ -527,6 +527,11 @@ export default function Map3D({
               <div className="pc-apnames">
                 {prog.o.municipality || prog.o.name} → {prog.d.municipality || prog.d.name}
               </div>
+              {(route?.legCount ?? 1) > 1 && (
+                <div className="pc-apnames">
+                  Leg {(route!.legIndex ?? 0) + 1} of {route!.legCount} on this callsign today
+                </div>
+              )}
               <div className="pc-bar">
                 <div className="pc-bar-fill" style={{ width: `${prog.pct}%` }} />
               </div>

@@ -31,12 +31,20 @@ export interface Airport {
   lon: number;
 }
 
+// One sector of a (possibly multi-stop) rotation flown under a single callsign.
+export interface RouteLeg {
+  origin: Airport;
+  destination: Airport;
+  legIndex: number; // 0-based position within the rotation
+  legCount: number; // total legs the callsign flies today
+}
+
 export interface RouteInfo {
   callsign: string;
   airline?: string;
   origin: Airport | null;
   destination: Airport | null;
-  source?: "adsbdb" | "tfms" | "local";
+  source?: "vrs" | "adsbdb" | "tfms" | "local";
   confidence?: "verified" | "plausible" | "uncertain" | "rejected";
   reason?: string;
   crossTrackNm?: number;
@@ -44,6 +52,8 @@ export interface RouteInfo {
   routeLengthNm?: number;
   distanceToOriginNm?: number;
   distanceToDestinationNm?: number;
+  legIndex?: number;
+  legCount?: number;
 }
 
 export interface RouteAudit {
@@ -54,7 +64,7 @@ export interface RouteAudit {
     | "hidden"
     | "feed_hint_unresolved"
     | "observed_local";
-  provider?: "adsbdb" | "tfms" | "local";
+  provider?: "vrs" | "adsbdb" | "tfms" | "local";
   reason: string;
   originHint?: string;
   destinationHint?: string;

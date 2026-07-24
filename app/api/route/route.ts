@@ -1,13 +1,24 @@
 import { NextResponse } from "next/server";
-import { assessRoute } from "@/lib/route-confidence";
+import { assessRoute, pickBestLeg, type RouteObservation } from "@/lib/route-confidence";
+import { callsignVariants, parseVrsRoute, vrsRouteUrl } from "@/lib/route-source";
 import { findRegionalAirport } from "@/lib/airports";
-import type { Airport, RouteAudit, RouteInfo } from "@/lib/types";
+import type { Airport, RouteAudit, RouteInfo, RouteLeg } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-// Cache route lookups — a given callsign's route is stable for the day.
-const cache = new Map<string, { t: number; data: RouteInfo | null }>();
+interface ScheduleMatch {
+  legs: RouteLeg[];
+  airline?: string;
+  provider: "vrs" | "adsbdb";
+}
+
+// Cache route lookups — a given callsign's rotation is stable for the day.
+const cache = new Map<string, { t: number; data: ScheduleMatch | null }>();
 const TTL_MS = 60 * 60 * 1000;
+// A miss is cached far more briefly than a hit. A timeout or a blip at the
+// upstream is indistinguishable from "this callsign has no route", and an hour
+// of blank routes for an aircraft overhead is a bad trade for one saved fetch.
+const MISS_TTL_MS = 5 * 60 * 1000;
 
 function mapAirport(a: any): Airport | null {
   if (!a || typeof a.latitude !== "number" || typeof a.longitude !== "number") return null;
@@ -20,6 +31,61 @@ function mapAirport(a: any): Airport | null {
     lat: a.latitude,
     lon: a.longitude,
   };
+}
+
+async function fetchVrs(callsign: string): Promise<ScheduleMatch | null> {
+  for (const variant of callsignVariants(callsign)) {
+    const url = vrsRouteUrl(variant);
+    if (!url) continue;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "plane-spotter/0.6 (personal use)" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) continue;
+    const legs = parseVrsRoute(await res.json());
+    if (legs.length) return { legs, provider: "vrs" };
+  }
+  return null;
+}
+
+// adsbdb collapses a rotation into a single origin/destination pair and its
+// snapshot lags schedule changes, so it is only consulted when VRS has no file
+// for the callsign at all.
+async function fetchAdsbdb(callsign: string): Promise<ScheduleMatch | null> {
+  const res = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(callsign)}`, {
+    headers: { "User-Agent": "plane-spotter/0.6 (personal use)" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!res.ok) return null;
+  const fr = (await res.json())?.response?.flightroute;
+  if (!fr) return null;
+  const origin = mapAirport(fr.origin);
+  const destination = mapAirport(fr.destination);
+  if (!origin || !destination) return null;
+  return {
+    legs: [{ origin, destination, legIndex: 0, legCount: 1 }],
+    airline: fr.airline?.name || undefined,
+    provider: "adsbdb",
+  };
+}
+
+async function resolveSchedule(callsign: string): Promise<ScheduleMatch | null> {
+  const hit = cache.get(callsign);
+  if (hit && Date.now() - hit.t < (hit.data ? TTL_MS : MISS_TTL_MS)) return hit.data;
+
+  let match: ScheduleMatch | null = null;
+  for (const lookup of [fetchVrs, fetchAdsbdb]) {
+    try {
+      match = await lookup(callsign);
+    } catch {
+      match = null;
+    }
+    if (match) break;
+  }
+  cache.set(callsign, { t: Date.now(), data: match });
+  return match;
 }
 
 function mapRegionalAirport(code?: string): Airport | null {
@@ -38,8 +104,9 @@ function routeResponse(route: RouteInfo | null, audit: RouteAudit) {
   return NextResponse.json({ route, audit }, { status: 200 });
 }
 
-// Free callsign -> route (origin/destination) lookup via adsbdb. ADS-B itself
-// doesn't carry route info; this matches the callsign against a schedule DB.
+// Free callsign -> route lookup. ADS-B itself doesn't carry route info, so
+// this matches the callsign against a schedule table and then checks the claim
+// against the live position — a schedule match is a candidate, not a fact.
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const callsign = (searchParams.get("callsign") ?? "").trim().toUpperCase().replace(/\s+/g, "");
@@ -86,6 +153,13 @@ export async function GET(req: Request) {
         ? Number.NaN
         : Number(altitudeRaw);
 
+  const observation = (): RouteObservation => ({
+    lat,
+    lon,
+    track: Number.isFinite(track) ? track : undefined,
+    altitude: altitude === "ground" || Number.isFinite(altitude) ? altitude : undefined,
+  });
+
   const withConfidence = (candidate: RouteInfo | null): RouteInfo | null => {
     if (!candidate) return null;
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
@@ -95,13 +169,7 @@ export async function GET(req: Request) {
         reason: "No live position was supplied to verify this schedule match.",
       };
     }
-    return assessRoute(candidate, {
-      lat,
-      lon,
-      track: Number.isFinite(track) ? track : undefined,
-      altitude:
-        altitude === "ground" || Number.isFinite(altitude) ? altitude : undefined,
-    });
+    return assessRoute(candidate, observation());
   };
 
   const feedRoute = (() => {
@@ -131,90 +199,70 @@ export async function GET(req: Request) {
     });
   }
 
-  const hit = cache.get(callsign);
-  if (hit && Date.now() - hit.t < TTL_MS) {
-    const checked = withConfidence(hit.data);
-    if (checked) {
-      return routeResponse(checked, {
-        status: checked.confidence === "rejected" ? "hidden" : "identified",
-        provider: "adsbdb",
-        reason:
-          checked.confidence === "rejected"
-            ? checked.reason || "ADSBDB had a schedule candidate, but live geometry rejected it."
-            : "ADSBDB supplied a schedule candidate for this callsign.",
-      });
-    }
+  const match = await resolveSchedule(callsign);
+
+  if (!match) {
     const fallbackAudit = localAudit();
     if (fallbackAudit) return routeResponse(null, fallbackAudit);
     return routeResponse(null, {
       status: feedOrigin || feedDestination ? "feed_hint_unresolved" : "no_public_match",
-      provider: feedOrigin || feedDestination ? "tfms" : "adsbdb",
+      provider: feedOrigin || feedDestination ? "tfms" : "vrs",
       reason:
         feedOrigin || feedDestination
           ? "The live feed included route text, but this app could not resolve both endpoints for geometry checks."
-          : "ADSBDB did not have a public schedule match for this callsign.",
+          : "No public schedule source listed a route for this callsign.",
       originHint: feedOrigin || undefined,
       destinationHint: feedDestination || undefined,
     });
   }
 
-  try {
-    const res = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(callsign)}`, {
-      headers: { "User-Agent": "plane-spotter/0.3 (personal use)" },
-      cache: "no-store",
-      signal: AbortSignal.timeout(6000),
-    });
-    if (!res.ok) {
-      cache.set(callsign, { t: Date.now(), data: null });
-      const fallbackAudit = localAudit();
-      if (fallbackAudit) return routeResponse(null, fallbackAudit);
-      return routeResponse(null, {
-        status: "no_public_match",
-        provider: "adsbdb",
-        reason: `ADSBDB route lookup returned ${res.status}.`,
-      });
-    }
-    const json = await res.json();
-    const fr = json?.response?.flightroute;
-    if (!fr) {
-      cache.set(callsign, { t: Date.now(), data: null });
-      const fallbackAudit = localAudit();
-      if (fallbackAudit) return routeResponse(null, fallbackAudit);
-      return routeResponse(null, {
-        status: feedOrigin || feedDestination ? "feed_hint_unresolved" : "no_public_match",
-        provider: feedOrigin || feedDestination ? "tfms" : "adsbdb",
-        reason:
-          feedOrigin || feedDestination
-            ? "The live feed included route text, but this app could not resolve both endpoints for geometry checks."
-            : "ADSBDB did not have a public schedule match for this callsign.",
-        originHint: feedOrigin || undefined,
-        destinationHint: feedDestination || undefined,
-      });
-    }
-    const route: RouteInfo = {
-      callsign,
-      airline: fr.airline?.name || undefined,
-      origin: mapAirport(fr.origin),
-      destination: mapAirport(fr.destination),
-      source: "adsbdb",
-    };
-    cache.set(callsign, { t: Date.now(), data: route });
-    const checked = withConfidence(route);
-    return routeResponse(checked, {
-      status: checked?.confidence === "rejected" ? "hidden" : "identified",
-      provider: "adsbdb",
-      reason:
-        checked?.confidence === "rejected"
-          ? checked.reason || "ADSBDB had a schedule candidate, but live geometry rejected it."
-          : "ADSBDB supplied a schedule candidate for this callsign.",
-    });
-  } catch {
+  const providerName = match.provider === "vrs" ? "The VRS schedule data" : "ADSBDB";
+  const base = { airline: match.airline, source: match.provider } as const;
+
+  // Without a live position there is nothing to check the schedule against, so
+  // the first leg is shown as an unverified guess rather than a fact.
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    const [first] = match.legs;
+    return routeResponse(
+      {
+        ...base,
+        callsign,
+        origin: first.origin,
+        destination: first.destination,
+        legIndex: first.legIndex,
+        legCount: first.legCount,
+        confidence: "uncertain",
+        reason: "No live position was supplied to verify this schedule match.",
+      },
+      {
+        status: "identified",
+        provider: match.provider,
+        reason: `${providerName} supplied a schedule candidate for this callsign.`,
+      }
+    );
+  }
+
+  const checked = pickBestLeg(callsign, match.legs, observation(), base);
+  if (!checked) {
     const fallbackAudit = localAudit();
     if (fallbackAudit) return routeResponse(null, fallbackAudit);
     return routeResponse(null, {
       status: "no_public_match",
-      provider: "adsbdb",
-      reason: "ADSBDB route lookup failed before returning a public schedule match.",
+      provider: match.provider,
+      reason: `${providerName} listed this callsign but without usable airport coordinates.`,
     });
   }
+
+  const rejected = checked.confidence === "rejected";
+  const legNote =
+    (checked.legCount ?? 1) > 1
+      ? ` Leg ${(checked.legIndex ?? 0) + 1} of ${checked.legCount} best fits the live position.`
+      : "";
+  return routeResponse(checked, {
+    status: rejected ? "hidden" : "identified",
+    provider: match.provider,
+    reason: rejected
+      ? checked.reason || `${providerName} had a schedule candidate, but live geometry rejected it.`
+      : `${providerName} supplied a schedule candidate for this callsign.${legNote}`,
+  });
 }
