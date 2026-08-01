@@ -21,7 +21,11 @@ const CLAY: [number, number, number] = [193, 95, 60];
 const FT_TO_M = 0.3048;
 const altM = (p: Plane) => (typeof p.alt_baro === "number" ? p.alt_baro * FT_TO_M : 0);
 
-interface RenderPlane extends Plane {
+// `enrich` already dropped any aircraft without a position, so a render row can
+// narrow lat/lon to plain numbers and feed the motion projector directly.
+interface RenderPlane extends Omit<Plane, "lat" | "lon"> {
+  lat: number;
+  lon: number;
   renderLat: number;
   renderLon: number;
   airlineBadge?: AirlineBadge;
@@ -31,6 +35,31 @@ interface MotionState {
   lat: number;
   lon: number;
 }
+
+// deck.gl icon definitions have to keep a stable identity. IconLayer's auto
+// packing walks the whole data array whenever it sees a change, so an accessor
+// that builds a fresh object per aircraft per frame both allocates needlessly
+// and defeats the atlas cache.
+type IconDef = {
+  url: string;
+  width: number;
+  height: number;
+  anchorX: number;
+  anchorY: number;
+  mask: boolean;
+};
+
+const iconDefs = new Map<string, IconDef>();
+function iconDef(url: string): IconDef {
+  let def = iconDefs.get(url);
+  if (!def) {
+    def = { url, width: 64, height: 64, anchorX: 32, anchorY: 32, mask: false };
+    iconDefs.set(url, def);
+  }
+  return def;
+}
+
+const MEDICAL_ICON = iconDef("/medical-cross.svg");
 
 // Emoji atlas: cell 0 = airplane, cell 1 = helicopter.
 function makeIconAtlas(): string {
@@ -88,15 +117,17 @@ export default function Map3D({
   const motionRef = useRef<Map<string, MotionState>>(new Map());
   const lastMotionFrameRef = useRef<number | null>(null);
 
-  // Animation clock for continuous aircraft motion. Thirty frames per second
-  // is visually smooth without making React rebuild deck.gl layers at 60 fps;
-  // 3D uses a lighter 15 fps cadence.
+  // Animation clock for continuous aircraft motion. At the zoom this map uses,
+  // even a 500-knot aircraft crosses about 3 pixels per second, so a frame at
+  // 15 fps moves it a fifth of a pixel — anything faster spends real phone
+  // battery redrawing differences no one can see. 3D is heavier still, so it
+  // runs at 8.
   const [tick, setTick] = useState(0);
   useEffect(() => {
     let raf = 0;
     let running = true;
     let lastPaint = 0;
-    const frameInterval = mode === "3d" ? 1000 / 15 : 1000 / 30;
+    const frameInterval = mode === "3d" ? 1000 / 8 : 1000 / 15;
     const loop = (ts: number) => {
       if (!running) return;
       if (ts - lastPaint >= frameInterval) {
@@ -164,61 +195,99 @@ export default function Map3D({
   const routeUsable =
     Boolean(route?.origin && route?.destination) && route?.confidence !== "rejected";
 
+  // The rows handed to deck.gl. These are rebuilt only when a new ADS-B
+  // snapshot arrives — never per animation frame. A fresh `data` reference
+  // makes deck.gl treat every attribute as dirty and re-upload all of them
+  // (and makes IconLayer re-pack its atlas), which at 30 fps costs more than a
+  // phone can pay. Instead the rows below are mutated in place and only the
+  // position attribute is invalidated each frame.
+  const animatedPlanes = useMemo<RenderPlane[]>(() => {
+    const rows: RenderPlane[] = planes.map((plane) => ({
+      ...plane,
+      lat: plane.lat!,
+      lon: plane.lon!,
+      renderLat: plane.lat!,
+      renderLon: plane.lon!,
+      airlineBadge: operatorBadge(plane),
+    }));
+    const active = new Set(rows.map((row) => row.id));
+    for (const id of motionRef.current.keys()) {
+      if (!active.has(id)) motionRef.current.delete(id);
+    }
+    return rows;
+  }, [planes]);
+
+  // Subsets are memoised alongside the rows for the same reason: a new array
+  // each frame would put those layers back on the full-rebuild path.
+  const glowPlanes = useMemo(
+    () => animatedPlanes.filter((p) => p.inView || p.id === selectedId),
+    [animatedPlanes, selectedId]
+  );
+  const badgedPlanes = useMemo(
+    () => animatedPlanes.filter((plane) => plane.airlineBadge),
+    [animatedPlanes]
+  );
+  const medicalPlanes = useMemo(
+    () => animatedPlanes.filter((plane) => isMedical(plane)),
+    [animatedPlanes]
+  );
+
   // Project every fresh ADS-B snapshot forward to this frame, then gently
   // absorb the small correction when the next real position arrives. The list
-  // still shows source data; only map coordinates are animated.
-  const animatedPlanes = useMemo<RenderPlane[]>(() => {
+  // still shows source data; only map coordinates are animated. Mutating the
+  // existing rows keeps their array identity stable — see above.
+  useMemo(() => {
     const now = Date.now();
     const previousFrame = lastMotionFrameRef.current;
     const frameDelta = previousFrame == null ? 0 : Math.max(0, Math.min(250, tick - previousFrame));
     lastMotionFrameRef.current = tick;
     const correctionBlend = previousFrame == null ? 1 : 1 - Math.exp(-frameDelta / 350);
-    const active = new Set<string>();
 
-    const rendered = planes.map((plane) => {
-      active.add(plane.id);
-      const target = projectAircraftPosition(
-        { ...plane, lat: plane.lat!, lon: plane.lon! },
-        now
-      );
-      const prior = motionRef.current.get(plane.id);
-      const state = prior
-        ? {
-            lat: prior.lat + (target.lat - prior.lat) * correctionBlend,
-            lon: prior.lon + (target.lon - prior.lon) * correctionBlend,
-          }
-        : { lat: target.lat, lon: target.lon };
-      motionRef.current.set(plane.id, state);
-      return {
-        ...plane,
-        renderLat: state.lat,
-        renderLon: state.lon,
-        airlineBadge: operatorBadge(plane),
-      };
-    });
-
-    for (const id of motionRef.current.keys()) {
-      if (!active.has(id)) motionRef.current.delete(id);
+    for (const row of animatedPlanes) {
+      const target = projectAircraftPosition(row, now);
+      const prior = motionRef.current.get(row.id);
+      if (prior) {
+        prior.lat += (target.lat - prior.lat) * correctionBlend;
+        prior.lon += (target.lon - prior.lon) * correctionBlend;
+      } else {
+        motionRef.current.set(row.id, { lat: target.lat, lon: target.lon });
+      }
+      const state = motionRef.current.get(row.id)!;
+      row.renderLat = state.lat;
+      row.renderLon = state.lon;
     }
-    return rendered;
-  }, [planes, tick]);
+  }, [animatedPlanes, tick]);
+
+  // The view cone and home marker only move when the viewer changes their
+  // setup, so they are held still rather than regenerated 30 times a second.
+  const coneData = useMemo(
+    () =>
+      showFieldOfView
+        ? [{ polygon: conePolygon(home.lat, home.lon, cone.start, cone.end, radiusNm) }]
+        : [],
+    [showFieldOfView, home.lat, home.lon, cone.start, cone.end, radiusNm]
+  );
+  const homeData = useMemo<{ position: [number, number] }[]>(
+    () => [{ position: [home.lon, home.lat] }],
+    [home.lat, home.lon]
+  );
+
+  // A drawn route only changes when the selection does, so its geometry is
+  // held still instead of being re-tessellated on every animation frame.
+  const routeShape = useMemo(() => {
+    const o = route?.origin;
+    const d = route?.destination;
+    if (!routeUsable || !o || !d) return null;
+    return { airports: [o, d], arc: [{ from: [o.lon, o.lat, 0], to: [d.lon, d.lat, 0] }] };
+  }, [routeUsable, route?.origin, route?.destination]);
 
   // Claimed great-circle corridor for a route that passed the live plausibility check.
   function routeLayers(): any[] {
-    if (
-      !sel ||
-      sel.lon == null ||
-      sel.lat == null ||
-      !routeUsable ||
-      !route?.origin ||
-      !route?.destination
-    ) return [];
-    const o = route.origin;
-    const d = route.destination;
+    if (!sel || sel.lon == null || sel.lat == null || !routeShape) return [];
     return [
       new GreatCircleLayer({
         id: "route-corridor",
-        data: [{ from: [o.lon, o.lat, 0], to: [d.lon, d.lat, 0] }],
+        data: routeShape.arc,
         getSourcePosition: (x: any) => x.from,
         getTargetPosition: (x: any) => x.to,
         getSourceColor: [193, 95, 60, 180],
@@ -227,7 +296,7 @@ export default function Map3D({
       }),
       new ScatterplotLayer<Airport>({
         id: "route-ap",
-        data: [o, d],
+        data: routeShape.airports,
         getPosition: (x) => [x.lon, x.lat],
         getRadius: 5,
         radiusUnits: "pixels",
@@ -239,7 +308,7 @@ export default function Map3D({
       }),
       new TextLayer<Airport>({
         id: "route-lbl",
-        data: [o, d],
+        data: routeShape.airports,
         getPosition: (x) => [x.lon, x.lat],
         getText: (x) => x.iata || x.icao || "",
         getSize: 13,
@@ -256,7 +325,7 @@ export default function Map3D({
   // ── Aircraft, shared by the 2D overlay and the 3D scene ───────────────
   const glow = new ScatterplotLayer<RenderPlane>({
     id: "plane-glow",
-    data: animatedPlanes.filter((p) => p.inView || p.id === selectedId),
+    data: glowPlanes,
     getPosition: (d) => [d.renderLon, d.renderLat, altM(d)],
     getRadius: (d) => (d.id === selectedId ? 19 : 13),
     radiusUnits: "pixels",
@@ -267,6 +336,9 @@ export default function Map3D({
     lineWidthUnits: "pixels",
     billboard: true,
     updateTriggers: {
+      // Only the position moves between snapshots; leaving the other triggers
+      // alone keeps their attributes off the per-frame recompute path.
+      getPosition: tick,
       getRadius: selectedId,
       getFillColor: selectedId,
       getLineColor: selectedId,
@@ -286,56 +358,42 @@ export default function Map3D({
     getAngle: (d) => (isHelicopter(d) ? 0 : 45 - (d.track ?? 0)),
     billboard: true,
     pickable: true,
-    updateTriggers: { getSize: selectedId },
+    updateTriggers: { getPosition: tick, getSize: selectedId },
   });
 
   // Locally bundled real airline artwork stays crisp and avoids a network
   // request per aircraft. Unknown/private operators simply get no logo.
   const airlineLogoLayer = new IconLayer<RenderPlane>({
     id: "airline-logos",
-    data: animatedPlanes.filter((plane) => plane.airlineBadge),
+    data: badgedPlanes,
     getPosition: (plane) => [plane.renderLon, plane.renderLat, altM(plane)],
-    getIcon: (plane) => ({
-      url: plane.airlineBadge!.logo,
-      width: 64,
-      height: 64,
-      anchorX: 32,
-      anchorY: 32,
-      mask: false,
-    }),
+    getIcon: (plane) => iconDef(plane.airlineBadge!.logo),
     getSize: 21,
     sizeUnits: "pixels",
     getPixelOffset: [0, 22],
     billboard: true,
     pickable: false,
+    updateTriggers: { getPosition: tick },
   });
 
   // Red medical cross pinned just below any air-ambulance flight — mostly the
   // HEMS helicopters registered to hospitals and medical operators.
   const medicalLayer = new IconLayer<RenderPlane>({
     id: "medical-cross",
-    data: animatedPlanes.filter((plane) => isMedical(plane)),
+    data: medicalPlanes,
     getPosition: (plane) => [plane.renderLon, plane.renderLat, altM(plane)],
-    getIcon: () => ({
-      url: "/medical-cross.svg",
-      width: 64,
-      height: 64,
-      anchorX: 32,
-      anchorY: 32,
-      mask: false,
-    }),
+    getIcon: () => MEDICAL_ICON,
     getSize: 16,
     sizeUnits: "pixels",
     getPixelOffset: [0, 24],
     billboard: true,
     pickable: false,
+    updateTriggers: { getPosition: tick },
   });
 
   const coneLayer = new PolygonLayer<{ polygon: [number, number][] }>({
     id: "cone",
-    data: showFieldOfView
-      ? [{ polygon: conePolygon(home.lat, home.lon, cone.start, cone.end, radiusNm) }]
-      : [],
+    data: coneData,
     getPolygon: (d) => d.polygon,
     getFillColor: [193, 95, 60, 52],
     getLineColor: [193, 95, 60, 220],
@@ -347,7 +405,7 @@ export default function Map3D({
 
   const homeLayer = new ScatterplotLayer<{ position: [number, number] }>({
     id: "home",
-    data: [{ position: [home.lon, home.lat] }],
+    data: homeData,
     getPosition: (d) => d.position,
     getRadius: 7,
     radiusUnits: "pixels",
@@ -390,47 +448,136 @@ export default function Map3D({
     planeLayer,
   ];
 
-  const heli = sel ? isHelicopter(sel) : false;
-  const selectedAirline = sel ? operatorBadge(sel) : undefined;
-  const selMedical = sel ? isMedical(sel) : false;
-  const vs = sel?.baro_rate;
-  const climb = vs != null && vs > 100 ? " ↑" : vs != null && vs < -100 ? " ↓" : "";
+  // The card only changes when the selection or its route does. Keeping it out
+  // of the animation clock's path means a frame touches the map and nothing
+  // else — it was previously being reconciled on every tick.
+  const planeCard = useMemo(() => {
+    if (!sel) return null;
 
-  // Direct-route estimate. This is deliberately not labeled as an actual
-  // flown track because ADS-B snapshots do not contain historical routing.
-  let prog: {
-    o: Airport;
-    d: Airport;
-    along: number;
-    remain: number;
-    pct: number;
-    mins: number | null;
-    eta: Date | null;
-  } | null = null;
-  if (
-    sel &&
-    sel.lon != null &&
-    sel.lat != null &&
-    routeUsable &&
-    route?.origin &&
-    route?.destination
-  ) {
-    const o = route.origin;
-    const d = route.destination;
-    const remain = distanceNm(sel.lat, sel.lon, d.lat, d.lon);
-    const total = route.routeLengthNm ?? distanceNm(o.lat, o.lon, d.lat, d.lon);
-    const along = Math.max(0, Math.min(total, route.alongTrackNm ?? 0));
-    const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((along / total) * 100))) : 0;
-    const gs = sel.gs && sel.gs > 40 ? sel.gs : null;
-    const mins = gs ? (remain / gs) * 60 : null;
-    const eta = mins != null && isFinite(mins) ? new Date(Date.now() + mins * 60000) : null;
-    prog = { o, d, along, remain, pct, mins, eta };
-  }
-  const showAuditNote =
-    Boolean(routeAudit) &&
-    !prog &&
-    !(route && !routeUsable) &&
-    routeAudit?.status !== "identified";
+    const heli = isHelicopter(sel);
+    const selectedAirline = operatorBadge(sel);
+    const selMedical = isMedical(sel);
+    const vs = sel.baro_rate;
+    const climb = vs != null && vs > 100 ? " ↑" : vs != null && vs < -100 ? " ↓" : "";
+
+    // Direct-route estimate. This is deliberately not labeled as an actual
+    // flown track because ADS-B snapshots do not contain historical routing.
+    let prog: {
+      o: Airport;
+      d: Airport;
+      along: number;
+      remain: number;
+      pct: number;
+      mins: number | null;
+      eta: Date | null;
+    } | null = null;
+    if (sel.lon != null && sel.lat != null && routeUsable && route?.origin && route?.destination) {
+      const o = route.origin;
+      const d = route.destination;
+      const remain = distanceNm(sel.lat, sel.lon, d.lat, d.lon);
+      const total = route.routeLengthNm ?? distanceNm(o.lat, o.lon, d.lat, d.lon);
+      const along = Math.max(0, Math.min(total, route.alongTrackNm ?? 0));
+      const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((along / total) * 100))) : 0;
+      const gs = sel.gs && sel.gs > 40 ? sel.gs : null;
+      const mins = gs ? (remain / gs) * 60 : null;
+      const eta = mins != null && isFinite(mins) ? new Date(Date.now() + mins * 60000) : null;
+      prog = { o, d, along, remain, pct, mins, eta };
+    }
+    const showAuditNote =
+      Boolean(routeAudit) &&
+      !prog &&
+      !(route && !routeUsable) &&
+      routeAudit?.status !== "identified";
+
+    return (
+      <div className="plane-card">
+        <button className="plane-card-x" aria-label="Close" onClick={() => onSelect(null)}>
+          ×
+        </button>
+        <div className="pc-call">
+          {selectedAirline && <img className="pc-airline-logo" src={selectedAirline.logo} alt={selectedAirline.name} />}
+          {heli ? "🚁 " : ""}
+          {sel.callsign}
+          {sel.t ? <span className="pc-type"> · {sel.t}</span> : null}
+        </div>
+        {selectedAirline?.kind === "private" && (
+          <div className="pc-sub pc-operator">Operated by {selectedAirline.name}</div>
+        )}
+        {sel.desc && <div className="pc-sub">{sel.desc}</div>}
+        {sel.ownOp && (
+          <div className="pc-sub pc-owner">Registered owner · {sel.ownOp}</div>
+        )}
+        {sel.photoThumbnailUrl && (
+          <img className="pc-aircraft-photo" src={sel.photoThumbnailUrl} alt={`${sel.callsign} aircraft`} />
+        )}
+        <div className="pc-row">
+          {fmtAlt(sel.alt_baro)}
+          {climb} · {fmtSpeed(sel.gs)}
+        </div>
+        <div className="pc-row">
+          {fmtDist(sel.distNm)} to your {cardinal(sel.brg)} ({Math.round(sel.brg)}°)
+        </div>
+        {selMedical && <span className="pc-medical">✚ Medical / air ambulance</span>}
+        {sel.inView && <span className="pc-inview">In your view</span>}
+        {sel.localOperation && <span className="pc-operation">{sel.localOperation.label}</span>}
+
+        {route && !routeUsable && (
+          <div className="pc-route-note">
+            <b>Route hidden</b> · {route.reason || "Schedule match could not be verified."}
+          </div>
+        )}
+
+        {showAuditNote && routeAudit && (
+          <div className="pc-route-note">
+            <b>
+              {routeAudit.status === "observed_local"
+                ? "Local movement"
+                : routeAudit.status === "feed_hint_unresolved"
+                  ? "Route hint"
+                  : "Route not identified"}
+            </b>{" "}
+            · {routeAudit.reason}
+          </div>
+        )}
+
+        {route?.confidence === "uncertain" && routeUsable && (
+          <div className="pc-route-note">
+            <b>Schedule match</b> · {route.reason || "Route is not fully verified yet."}
+          </div>
+        )}
+
+        {prog && (
+          <div className="pc-route">
+            <div className="pc-airports">
+              <b>{prog.o.iata || prog.o.icao}</b>
+              <i className="pc-arrow">✈</i>
+              <b>{prog.d.iata || prog.d.icao}</b>
+            </div>
+            <div className="pc-apnames">
+              {prog.o.municipality || prog.o.name} → {prog.d.municipality || prog.d.name}
+            </div>
+            {(route?.legCount ?? 1) > 1 && (
+              <div className="pc-apnames">
+                Leg {(route!.legIndex ?? 0) + 1} of {route!.legCount} on this callsign today
+              </div>
+            )}
+            <div className="pc-bar">
+              <div className="pc-bar-fill" style={{ width: `${prog.pct}%` }} />
+            </div>
+            <div className="pc-row pc-small">
+              Approx. {prog.pct}% along direct route · {prog.remain.toFixed(0)} nm direct to destination
+            </div>
+            {prog.mins != null && (
+              <div className="pc-row pc-small">
+                Direct estimate: {fmtDuration(prog.mins)}
+                {prog.eta ? ` · ETA ~${fmtClock(prog.eta)}` : ""}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }, [sel, route, routeAudit, routeUsable, onSelect]);
 
   return (
     <div style={{ position: "absolute", inset: 0 }}>
@@ -460,94 +607,7 @@ export default function Map3D({
       {mode === "light" && <div className="map-credit">© OpenStreetMap · OpenFreeMap</div>}
       {mode === "satellite" && <div className="map-credit">Imagery © Esri</div>}
 
-      {sel && (
-        <div className="plane-card">
-          <button className="plane-card-x" aria-label="Close" onClick={() => onSelect(null)}>
-            ×
-          </button>
-          <div className="pc-call">
-            {selectedAirline && <img className="pc-airline-logo" src={selectedAirline.logo} alt={selectedAirline.name} />}
-            {heli ? "🚁 " : ""}
-            {sel.callsign}
-            {sel.t ? <span className="pc-type"> · {sel.t}</span> : null}
-          </div>
-          {selectedAirline?.kind === "private" && (
-            <div className="pc-sub pc-operator">Operated by {selectedAirline.name}</div>
-          )}
-          {sel.desc && <div className="pc-sub">{sel.desc}</div>}
-          {sel.ownOp && (
-            <div className="pc-sub pc-owner">Registered owner · {sel.ownOp}</div>
-          )}
-          {sel.photoThumbnailUrl && (
-            <img className="pc-aircraft-photo" src={sel.photoThumbnailUrl} alt={`${sel.callsign} aircraft`} />
-          )}
-          <div className="pc-row">
-            {fmtAlt(sel.alt_baro)}
-            {climb} · {fmtSpeed(sel.gs)}
-          </div>
-          <div className="pc-row">
-            {fmtDist(sel.distNm)} to your {cardinal(sel.brg)} ({Math.round(sel.brg)}°)
-          </div>
-          {selMedical && <span className="pc-medical">✚ Medical / air ambulance</span>}
-          {sel.inView && <span className="pc-inview">In your view</span>}
-          {sel.localOperation && <span className="pc-operation">{sel.localOperation.label}</span>}
-
-          {route && !routeUsable && (
-            <div className="pc-route-note">
-              <b>Route hidden</b> · {route.reason || "Schedule match could not be verified."}
-            </div>
-          )}
-
-          {showAuditNote && routeAudit && (
-            <div className="pc-route-note">
-              <b>
-                {routeAudit.status === "observed_local"
-                  ? "Local movement"
-                  : routeAudit.status === "feed_hint_unresolved"
-                    ? "Route hint"
-                    : "Route not identified"}
-              </b>{" "}
-              · {routeAudit.reason}
-            </div>
-          )}
-
-          {route?.confidence === "uncertain" && routeUsable && (
-            <div className="pc-route-note">
-              <b>Schedule match</b> · {route.reason || "Route is not fully verified yet."}
-            </div>
-          )}
-
-          {prog && (
-            <div className="pc-route">
-              <div className="pc-airports">
-                <b>{prog.o.iata || prog.o.icao}</b>
-                <i className="pc-arrow">✈</i>
-                <b>{prog.d.iata || prog.d.icao}</b>
-              </div>
-              <div className="pc-apnames">
-                {prog.o.municipality || prog.o.name} → {prog.d.municipality || prog.d.name}
-              </div>
-              {(route?.legCount ?? 1) > 1 && (
-                <div className="pc-apnames">
-                  Leg {(route!.legIndex ?? 0) + 1} of {route!.legCount} on this callsign today
-                </div>
-              )}
-              <div className="pc-bar">
-                <div className="pc-bar-fill" style={{ width: `${prog.pct}%` }} />
-              </div>
-              <div className="pc-row pc-small">
-                Approx. {prog.pct}% along direct route · {prog.remain.toFixed(0)} nm direct to destination
-              </div>
-              {prog.mins != null && (
-                <div className="pc-row pc-small">
-                  Direct estimate: {fmtDuration(prog.mins)}
-                  {prog.eta ? ` · ETA ~${fmtClock(prog.eta)}` : ""}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      {planeCard}
     </div>
   );
 }
